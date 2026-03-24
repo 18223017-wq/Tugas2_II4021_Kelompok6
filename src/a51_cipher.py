@@ -2,101 +2,140 @@
 from dataclasses import dataclass
 from typing import List
 
+BLOCK_SIZE_BITS = 228  
+
 @dataclass
 class LFSR:
     size: int
-    taps: List[int]  # posisi bit yang di-XOR (0 = LSB / atau sesuaikan konvensi)
-    reg: int         # state saat ini (disimpan sebagai integer)
+    taps: List[int]
+    clk_bit: int  
+    reg: int = 0
 
-    def clock(self, control_bit: int = None, majority_bit: int = None) -> int:
-        """
-        Clock LFSR satu kali, return output bit.
-        Jika control_bit/majority_bit dipakai (A5/1), tambahkan logika dulu di luar. 
-        """
+    def clock(self) -> int:
         out = self.reg & 1
         feedback = 0
         for t in self.taps:
             feedback ^= (self.reg >> t) & 1
-
-        self.reg >>= 1
-        self.reg |= (feedback << (self.size - 1))
-        self.reg &= (1 << self.size) - 1
+        self.reg = ((self.reg >> 1) | (feedback << (self.size - 1))) & ((1 << self.size) - 1)
         return out
+
+    def get_clk_bit(self) -> int:
+        return (self.reg >> self.clk_bit) & 1
+
 
 def majority(x: int, y: int, z: int) -> int:
     return 1 if (x + y + z) >= 2 else 0
 
+
 class A51:
     """
-    Implementasi A5/1 stream cipher (kasar, disesuaikan dengan spesifikasi kuliah).
+    A5/1 stream cipher sesuai spesifikasi GSM + tugas:
+    - Key 64-bit di-load ke 3 LFSR
+    - Frame number (Fn) 22-bit di-load per blok
+    - Majority clocking
     """
-    def __init__(self, key_64bit: int):
-        # TODO: inisialisasi 3 LFSR dengan ukuran dan taps yang benar
-        # Contoh placeholder (bukan nilai final!)
-        self.r1 = LFSR(size=19, taps=[13, 16, 17, 18], reg=0)
-        self.r2 = LFSR(size=22, taps=[20, 21], reg=0)
-        self.r3 = LFSR(size=23, taps=[7, 20, 21, 22], reg=0)
 
-        self._init_with_key(key_64bit)
+    def __init__(self):
+        self.r1 = LFSR(size=19, taps=[13, 16, 17, 18], clk_bit=8)
+        self.r2 = LFSR(size=22, taps=[20, 21],         clk_bit=10)
+        self.r3 = LFSR(size=23, taps=[7, 20, 21, 22],  clk_bit=10)
 
-    def _init_with_key(self, key_64bit: int):
-        """
-        Inisialisasi internal state dari key 64-bit (ikuti prosedur A5/1). 
-        """
-        # TODO: isi sesuai algoritma A5/1 versi tugas
-        self.r1.reg = key_64bit & ((1 << 19) - 1)
-        self.r2.reg = (key_64bit >> 19) & ((1 << 22) - 1)
-        self.r3.reg = (key_64bit >> (19 + 22)) & ((1 << 23) - 1)
+    def _load_key(self, key_64bit: int):
+        """XOR key 64-bit ke semua LFSR bit per bit."""
+        self.r1.reg = 0
+        self.r2.reg = 0
+        self.r3.reg = 0
 
-    def keystream_bit(self) -> int:
-        """
-        Hasilkan 1 bit keystream.
-        Di A5/1 asli, pakai majority clocking pada bit kontrol tertentu (mis: bit 8,10,10).
-        """
-        # TODO: majority-based clocking
-        b1 = self.r1.clock()
-        b2 = self.r2.clock()
-        b3 = self.r3.clock()
+        for i in range(64):
+            bit = (key_64bit >> i) & 1
+            self.r1.reg ^= (bit << (i % self.r1.size))
+            self.r2.reg ^= (bit << (i % self.r2.size))
+            self.r3.reg ^= (bit << (i % self.r3.size))
+
+    def _load_fn(self, fn: int):
+        """XOR frame number 22-bit ke semua LFSR."""
+        for i in range(22):
+            bit = (fn >> i) & 1
+            self.r1.reg ^= (bit << (i % self.r1.size))
+            self.r2.reg ^= (bit << (i % self.r2.size))
+            self.r3.reg ^= (bit << (i % self.r3.size))
+
+    def _warmup(self, cycles: int = 100):
+        """Jalankan clocking tanpa ambil output (warmup)."""
+        for _ in range(cycles):
+            self._majority_clock()
+
+    def _majority_clock(self) -> int:
+        """Clock berdasarkan majority dari clk_bit ketiga LFSR."""
+        c1 = self.r1.get_clk_bit()
+        c2 = self.r2.get_clk_bit()
+        c3 = self.r3.get_clk_bit()
+        maj = majority(c1, c2, c3)
+
+        b1 = self.r1.clock() if c1 == maj else 0
+        b2 = self.r2.clock() if c2 == maj else 0
+        b3 = self.r3.clock() if c3 == maj else 0
+
         return b1 ^ b2 ^ b3
 
-    def keystream(self, n_bits: int) -> bytes:
-        result = bytearray()
-        byte_val = 0
-        for i in range(n_bits):
-            bit = self.keystream_bit()
-            byte_val = (byte_val << 1) | bit
-            if (i + 1) % 8 == 0:
-                result.append(byte_val)
-                byte_val = 0
-        return bytes(result)
+    def _init_for_block(self, key_64bit: int, fn: int):
+        """Inisialisasi LFSR untuk satu blok dengan key + Fn."""
+        self._load_key(key_64bit)
+        self._load_fn(fn)
+        self._warmup(100)
+
+    def _generate_block_keystream(self, key_64bit: int, fn: int) -> List[int]:
+        """Generate keystream 228 bit untuk satu blok."""
+        self._init_for_block(key_64bit, fn)
+        return [self._majority_clock() for _ in range(BLOCK_SIZE_BITS)]
+
+    def encrypt(self, data: bytes, key_64bit: int) -> bytes:
+        """
+        Enkripsi data dengan A5/1.
+        Payload dibagi blok 228-bit, tiap blok pakai Fn otomatis. [file:1]
+        """
+        bits_in = _bytes_to_bits_list(data)
+        bits_out = []
+        fn = 0
+
+        for i in range(0, len(bits_in), BLOCK_SIZE_BITS):
+            block = bits_in[i:i + BLOCK_SIZE_BITS]
+            keystream = self._generate_block_keystream(key_64bit, fn)
+            bits_out.extend(b ^ k for b, k in zip(block, keystream))
+            fn += 1
+
+        return _bits_list_to_bytes(bits_out)
+
+    def decrypt(self, data: bytes, key_64bit: int) -> bytes:
+        return self.encrypt(data, key_64bit) 
 
 
-    def encrypt(self, data: bytes) -> bytes:
-        """
-        XOR data dengan keystream (stream cipher).
-        """
-        n_bits = len(data) * 8
-        ks = self.keystream(n_bits)
-        return bytes(d ^ k for d, k in zip(data, ks))
 
-    def decrypt(self, data: bytes) -> bytes:
-        """
-        Sama dengan encrypt, karena stream cipher.
-        """
-        return self.encrypt(data)
+
+def _bytes_to_bits_list(data: bytes) -> List[int]:
+    bits = []
+    for byte in data:
+        for i in range(7, -1, -1):
+            bits.append((byte >> i) & 1)
+    return bits
+
+def _bits_list_to_bytes(bits: List[int]) -> bytes:
+    result = bytearray()
+    for i in range(0, len(bits), 8):
+        chunk = bits[i:i + 8]
+        if len(chunk) < 8:
+            chunk += [0] * (8 - len(chunk))
+        byte = 0
+        for b in chunk:
+            byte = (byte << 1) | b
+        result.append(byte)
+    return bytes(result)
+
+
+# ─── PUBLIC API ───────────────────────────────────────────────────────────────
 
 def a51_encrypt_payload(payload: bytes, key_64bit: int) -> bytes:
-    """
-    Enkripsi payload dengan A5/1 menggunakan key 64-bit.
-    Stream cipher: XOR payload dengan keystream. [file:1]
-    """
-    cipher = A51(key_64bit)
-    return cipher.encrypt(payload)
-
+    return A51().encrypt(payload, key_64bit)
 
 def a51_decrypt_payload(ciphertext: bytes, key_64bit: int) -> bytes:
-    """
-    Dekripsi ciphertext dengan A5/1 (identik dengan encrypt). [file:1]
-    """
-    cipher = A51(key_64bit)
-    return cipher.decrypt(ciphertext)
+    return A51().decrypt(ciphertext, key_64bit)
