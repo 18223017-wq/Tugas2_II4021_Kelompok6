@@ -1,230 +1,213 @@
-import os
-os.environ['TK_SILENCE_DEPRECATION'] = '1'
-
 import tkinter as tk
 from tkinter import filedialog, messagebox
-from pathlib import Path
+from tkinter import ttk
+import threading
 import cv2
 from PIL import Image, ImageTk
+import numpy as np
+import os
 
 from src.stego_video import embed_message, extract_message
-from src.video_io import read_video_frames
+from src.video_io import read_video_frames, mse_psnr_video, color_histogram_video
 
+# ==============================
+# MAIN APP
+# ==============================
 
-# 🎨 THEME
-BG = "#FFF6F9"
-CARD = "#FFFFFF"
-PRIMARY = "#FFB6C1"
-SECONDARY = "#B5EAD7"
-TEXT = "#333333"
-
-
-class App:
+class StegoApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Steganografi Video AVI 🌸")
-        self.root.configure(bg=BG)
-        self.root.geometry("1000x650")
+        self.root.title("Video Steganography Dashboard")
+        self.root.geometry("1200x700")
+        self.root.configure(bg="#1e1e1e")
 
-        self.frames = []
-        self.idx = 0
+        self.video_frames = []
+        self.current_frame = 0
         self.playing = False
 
-        self.cover = ""
-        self.message = ""
-        self.output = ""
+        self.setup_ui()
 
-        # ===== HEADER =====
-        header = tk.Label(root, text="Steganografi Video AVI",
-                          font=("Helvetica", 20, "bold"),
-                          bg=BG, fg=TEXT)
-        header.pack(pady=10)
+    # ==============================
+    # UI
+    # ==============================
 
-        # ===== MAIN CONTAINER =====
-        container = tk.Frame(root, bg=BG)
-        container.pack(fill="both", expand=True, padx=10, pady=5)
+    def setup_ui(self):
+        notebook = ttk.Notebook(self.root)
+        notebook.pack(fill="both", expand=True)
 
-        container.grid_columnconfigure(0, weight=1)
-        container.grid_columnconfigure(1, weight=2)
+        self.embed_tab = tk.Frame(notebook, bg="#1e1e1e")
+        self.extract_tab = tk.Frame(notebook, bg="#1e1e1e")
 
-        # ===== LEFT PANEL =====
-        left = tk.Frame(container, bg=CARD, bd=1, relief="solid")
-        left.grid(row=0, column=0, sticky="nsew", padx=10, pady=5)
+        notebook.add(self.embed_tab, text="Embed")
+        notebook.add(self.extract_tab, text="Extract")
 
-        # ===== RIGHT PANEL =====
-        right = tk.Frame(container, bg=CARD, bd=1, relief="solid")
-        right.grid(row=0, column=1, sticky="nsew", padx=10, pady=5)
+        self.build_embed_ui()
+        self.build_extract_ui()
 
-        # ================= LEFT CONTENT =================
-        self.build_left(left)
+    # ==============================
+    # EMBED UI
+    # ==============================
 
-        # ================= RIGHT CONTENT =================
-        self.build_right(right)
+    def build_embed_ui(self):
+        frame = self.embed_tab
 
-        # ===== OUTPUT LOG =====
-        self.log = tk.Text(root, height=8, bg=CARD)
-        self.log.pack(fill="x", padx=10, pady=10)
+        tk.Button(frame, text="Select Video", command=self.select_video).pack()
+        self.video_label = tk.Label(frame, text="No video selected", bg="#1e1e1e", fg="white")
+        self.video_label.pack()
 
-    # ================= LEFT UI =================
-    def build_left(self, parent):
-        tk.Label(parent, text="Embed Settings",
-                 font=("Helvetica", 14, "bold"),
-                 bg=CARD).pack(pady=10)
+        tk.Label(frame, text="Secret Message", bg="#1e1e1e", fg="white").pack()
+        self.message_entry = tk.Text(frame, height=5)
+        self.message_entry.pack()
 
-        self.btn(parent, "Load Video", self.load_video)
-        self.btn(parent, "Load Message", self.load_message)
-        self.btn(parent, "Save Output", self.save_output)
+        self.encrypt_var = tk.BooleanVar()
+        tk.Checkbutton(frame, text="Use Encryption", variable=self.encrypt_var).pack()
 
-        # Encryption
-        self.enc = tk.BooleanVar()
-        tk.Checkbutton(parent, text="Use Encryption (A5/1)",
-                       variable=self.enc, bg=CARD).pack(anchor="w", padx=10)
+        self.key_entry = tk.Entry(frame)
+        self.key_entry.pack()
 
-        self.key_entry = tk.Entry(parent)
-        self.key_entry.pack(fill="x", padx=10, pady=5)
+        self.random_var = tk.BooleanVar()
+        tk.Checkbutton(frame, text="Random Mode", variable=self.random_var).pack()
 
-        # Random
-        self.rand = tk.BooleanVar()
-        tk.Checkbutton(parent, text="Random Embedding",
-                       variable=self.rand, bg=CARD).pack(anchor="w", padx=10)
+        self.stego_key_entry = tk.Entry(frame)
+        self.stego_key_entry.pack()
 
-        self.stego_entry = tk.Entry(parent)
-        self.stego_entry.pack(fill="x", padx=10, pady=5)
+        tk.Button(frame, text="Embed", command=self.run_embed).pack(pady=10)
 
-        # Buttons
-        tk.Button(parent, text="EMBED", bg=SECONDARY,
-                  command=self.embed).pack(fill="x", padx=10, pady=10)
+        self.metrics_label = tk.Label(frame, text="", bg="#1e1e1e", fg="white")
+        self.metrics_label.pack()
 
-        tk.Button(parent, text="EXTRACT", bg=PRIMARY,
-                  command=self.extract).pack(fill="x", padx=10, pady=5)
+        # video canvas
+        self.canvas = tk.Label(frame)
+        self.canvas.pack()
 
-    # ================= RIGHT UI =================
-    def build_right(self, parent):
-        self.video_label = tk.Label(parent, bg="black", width=500, height=350)
-        self.video_label.pack(pady=10)
+        controls = tk.Frame(frame, bg="#1e1e1e")
+        controls.pack()
 
-        control = tk.Frame(parent, bg=CARD)
-        control.pack()
+        tk.Button(controls, text="Play", command=self.play_video).pack(side="left")
+        tk.Button(controls, text="Pause", command=self.pause_video).pack(side="left")
 
-        tk.Button(control, text="▶ Play", command=self.play).grid(row=0, column=0, padx=5)
-        tk.Button(control, text="⏸ Pause", command=self.pause).grid(row=0, column=1, padx=5)
+    # ==============================
+    # EXTRACT UI
+    # ==============================
 
-    # ================= BUTTON STYLE =================
-    def btn(self, parent, text, cmd):
-        tk.Button(parent, text=text, bg=PRIMARY,
-                  command=cmd).pack(fill="x", padx=10, pady=3)
+    def build_extract_ui(self):
+        frame = self.extract_tab
 
-    # ================= VIDEO =================
-    def load_video(self):
-        self.cover = filedialog.askopenfilename(filetypes=[("AVI", "*.avi")])
-        if not self.cover:
-            return
+        tk.Button(frame, text="Select Stego Video", command=self.select_stego).pack()
 
-        self.frames, _ = read_video_frames(self.cover)
+        self.extract_label = tk.Label(frame, text="", bg="#1e1e1e", fg="white")
+        self.extract_label.pack()
 
-        if not self.frames:
-            messagebox.showerror("Error", "Video gagal dibaca")
-            return
+        self.extract_key = tk.Entry(frame)
+        self.extract_key.pack()
 
-        self.idx = 0
-        self.show_frame()
+        self.extract_stego_key = tk.Entry(frame)
+        self.extract_stego_key.pack()
 
-    def show_frame(self):
-        if not self.frames:
-            return
+        tk.Button(frame, text="Extract", command=self.run_extract).pack(pady=10)
 
-        frame = self.frames[self.idx]
+        self.output_text = tk.Text(frame, height=10)
+        self.output_text.pack()
 
-        # resize biar fit
-        frame = cv2.resize(frame, (500, 300))
+    # ==============================
+    # FUNCTIONS
+    # ==============================
 
-        img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        img = ImageTk.PhotoImage(Image.fromarray(img))
+    def select_video(self):
+        self.video_path = filedialog.askopenfilename(filetypes=[("Video", "*.avi *.mp4")])
+        self.video_label.config(text=self.video_path)
 
-        self.video_label.configure(image=img)
-        self.video_label.image = img
-
-    def play(self):
-        if not self.frames:
-            messagebox.showwarning("Warning", "Load video dulu!")
-            return
-
-        self.playing = True
-        self.loop()
-
-    def pause(self):
-        self.playing = False
-
-    def loop(self):
-        if not self.playing or not self.frames:
-            return
-
-        self.idx = (self.idx + 1) % len(self.frames)
-        self.show_frame()
-        self.root.after(30, self.loop)
-
-    # ================= EMBED =================
-    def embed(self):
+    def run_embed(self):
         try:
-            if not self.cover or not self.message or not self.output:
-                raise Exception("Lengkapi semua input dulu!")
+            msg = self.message_entry.get("1.0", tk.END).encode()
 
-            with open(self.message, "rb") as f:
-                msg = f.read()
+            key = int(self.key_entry.get(), 0) if self.encrypt_var.get() else None
+            stego_key = int(self.stego_key_entry.get()) if self.random_var.get() else None
+
+            output_path = filedialog.asksaveasfilename(defaultextension=".avi")
 
             result = embed_message(
-                cover_path=self.cover,
-                output_path=self.output,
+                cover_path=self.video_path,
+                output_path=output_path,
                 message=msg,
-                is_text=self.message.endswith(".txt"),
-                extension=Path(self.message).suffix,
-                filename=Path(self.message).name,
-                use_encryption=self.enc.get(),
-                a51_key=int(self.key_entry.get(), 16) if self.enc.get() else None,
-                use_random=self.rand.get(),
-                stego_key=int(self.stego_entry.get()) if self.rand.get() else None
+                is_text=True,
+                use_encryption=self.encrypt_var.get(),
+                a51_key=key,
+                use_random=self.random_var.get(),
+                stego_key=stego_key
             )
 
-            self.log.insert(tk.END,
-                f"✔ Embed OK | PSNR: {result['psnr_avg']:.2f} | MSE: {result['mse_avg']:.4f}\n")
+            self.metrics_label.config(
+                text=f"MSE: {result['mse_avg']:.4f} | PSNR: {result['psnr_avg']:.2f}"
+            )
 
-            self.frames, _ = read_video_frames(self.output)
-            self.idx = 0
-            self.show_frame()
+            self.load_video(output_path)
 
         except Exception as e:
             messagebox.showerror("Error", str(e))
 
-    # ================= EXTRACT =================
-    def extract(self):
+    def select_stego(self):
+        self.stego_path = filedialog.askopenfilename(filetypes=[("Video", "*.avi *.mp4")])
+
+    def run_extract(self):
         try:
-            path = filedialog.askopenfilename(filetypes=[("AVI", "*.avi")])
-            if not path:
-                return
+            key = int(self.extract_key.get(), 0) if self.extract_key.get() else None
+            stego_key = int(self.extract_stego_key.get()) if self.extract_stego_key.get() else None
 
             result = extract_message(
-                stego_path=path,
-                a51_key=int(self.key_entry.get(), 16) if self.enc.get() else None,
-                stego_key=int(self.stego_entry.get()) if self.rand.get() else None
+                stego_path=self.stego_path,
+                a51_key=key,
+                stego_key=stego_key
             )
 
             if result["is_text"]:
-                self.log.insert(tk.END, f"📩 {result['message'].decode()}\n")
+                self.output_text.insert(tk.END, result["message"].decode())
             else:
-                save = filedialog.asksaveasfilename(
-                    defaultextension=result["extension"],
-                    initialfile=result["filename"]
-                )
-                with open(save, "wb") as f:
+                save_path = filedialog.asksaveasfilename(initialfile=result["filename"])
+                with open(save_path, "wb") as f:
                     f.write(result["message"])
-
-                self.log.insert(tk.END, f"✔ File saved: {save}\n")
 
         except Exception as e:
             messagebox.showerror("Error", str(e))
 
+    # ==============================
+    # VIDEO PLAYER
+    # ==============================
+
+    def load_video(self, path):
+        self.video_frames, self.fps = read_video_frames(path)
+        self.current_frame = 0
+
+    def play_video(self):
+        self.playing = True
+        self.update_frame()
+
+    def pause_video(self):
+        self.playing = False
+
+    def update_frame(self):
+        if not self.playing:
+            return
+
+        frame = self.video_frames[self.current_frame]
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        img = Image.fromarray(frame)
+        imgtk = ImageTk.PhotoImage(img)
+
+        self.canvas.imgtk = imgtk
+        self.canvas.configure(image=imgtk)
+
+        self.current_frame = (self.current_frame + 1) % len(self.video_frames)
+
+        self.root.after(int(1000/self.fps), self.update_frame)
+
+
+# ==============================
+# RUN
+# ==============================
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = App(root)
+    app = StegoApp(root)
     root.mainloop()
