@@ -180,21 +180,27 @@ def embed_message(
     all_data = header + payload
     all_bits = bytes_to_bits(all_data)
 
-    # Embed ke frame-frame
-    stego_frames = _spread_bits_to_frames(frames, all_bits, use_random, seed)
+    # embed header (SEQUENTIAL)
+    header_bits = bytes_to_bits(header)
+    frames_after_header = _spread_bits_to_frames(frames, header_bits, False, seed)
+
+    # embed payload (random / sequential)
+    payload_bits = bytes_to_bits(payload)
+    stego_frames = _spread_bits_to_frames(frames_after_header, payload_bits, use_random, seed)
 
     # Tulis stego video
     write_video_frames(output_path, stego_frames, fps)
 
     # Hitung PSNR rata-rata
     from src.video_io import mse_psnr_video
-    _, psnr_list, mse_avg, psnr_avg = mse_psnr_video(frames, stego_frames)
+    mse_list, psnr_list, mse_avg, psnr_avg = mse_psnr_video(frames, stego_frames)
 
     return {
         "total_capacity_bytes": total_cap,
         "payload_size_bytes":   len(payload),
         "header_size_bytes":    HEADER_SIZE,
         "total_embedded_bytes": needed,
+        "mse_list":             mse_list,
         "mse_avg":              mse_avg,
         "psnr_avg":             psnr_avg,
         "psnr_per_frame":       psnr_list

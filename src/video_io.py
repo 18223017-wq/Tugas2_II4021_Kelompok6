@@ -33,7 +33,7 @@ def write_video_frames(path: str, frames: List[np.ndarray], fps: float):
 
     h, w, c = frames[0].shape
     # FFV1: lossless video codec (ideal untuk test) [web:38]
-    fourcc = cv2.VideoWriter_fourcc(*"XVID")
+    fourcc = cv2.VideoWriter_fourcc(*"FFV1")
     out = cv2.VideoWriter(path, fourcc, fps, (w, h))
 
     for f in frames:
