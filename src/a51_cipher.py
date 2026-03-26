@@ -1,14 +1,16 @@
 # src/a51_cipher.py
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List
+import numpy as np
 
-BLOCK_SIZE_BITS = 228  
+BLOCK_SIZE_BITS = 228
+
 
 @dataclass
 class LFSR:
     size: int
     taps: List[int]
-    clk_bit: int  
+    clk_bit: int
     reg: int = 0
 
     def clock(self) -> int:
@@ -41,11 +43,9 @@ class A51:
         self.r3 = LFSR(size=23, taps=[7, 20, 21, 22],  clk_bit=10)
 
     def _load_key(self, key_64bit: int):
-        """XOR key 64-bit ke semua LFSR bit per bit."""
         self.r1.reg = 0
         self.r2.reg = 0
         self.r3.reg = 0
-
         for i in range(64):
             bit = (key_64bit >> i) & 1
             self.r1.reg ^= (bit << (i % self.r1.size))
@@ -53,7 +53,6 @@ class A51:
             self.r3.reg ^= (bit << (i % self.r3.size))
 
     def _load_fn(self, fn: int):
-        """XOR frame number 22-bit ke semua LFSR."""
         for i in range(22):
             bit = (fn >> i) & 1
             self.r1.reg ^= (bit << (i % self.r1.size))
@@ -61,12 +60,10 @@ class A51:
             self.r3.reg ^= (bit << (i % self.r3.size))
 
     def _warmup(self, cycles: int = 100):
-        """Jalankan clocking tanpa ambil output (warmup)."""
         for _ in range(cycles):
             self._majority_clock()
 
     def _majority_clock(self) -> int:
-        """Clock berdasarkan majority dari clk_bit ketiga LFSR."""
         c1 = self.r1.get_clk_bit()
         c2 = self.r2.get_clk_bit()
         c3 = self.r3.get_clk_bit()
@@ -79,38 +76,46 @@ class A51:
         return b1 ^ b2 ^ b3
 
     def _init_for_block(self, key_64bit: int, fn: int):
-        """Inisialisasi LFSR untuk satu blok dengan key + Fn."""
         self._load_key(key_64bit)
         self._load_fn(fn)
         self._warmup(100)
 
     def _generate_block_keystream(self, key_64bit: int, fn: int) -> List[int]:
-        """Generate keystream 228 bit untuk satu blok."""
         self._init_for_block(key_64bit, fn)
         return [self._majority_clock() for _ in range(BLOCK_SIZE_BITS)]
+
+    def _generate_all_keystream(self, key_64bit: int, total_bits: int) -> np.ndarray:
+        """
+        Generate the full keystream for `total_bits` bits across as many
+        frame-number blocks as needed, returned as a NumPy uint8 array.
+        Avoids repeated list allocation by writing directly into a pre-allocated array.
+        """
+        n_blocks  = (total_bits + BLOCK_SIZE_BITS - 1) // BLOCK_SIZE_BITS
+        keystream = np.empty(n_blocks * BLOCK_SIZE_BITS, dtype=np.uint8)
+
+        for fn in range(n_blocks):
+            self._init_for_block(key_64bit, fn)
+            offset = fn * BLOCK_SIZE_BITS
+            for k in range(BLOCK_SIZE_BITS):
+                keystream[offset + k] = self._majority_clock()
+
+        return keystream[:total_bits]
 
     def encrypt(self, data: bytes, key_64bit: int) -> bytes:
         """
         Enkripsi data dengan A5/1.
-        Payload dibagi blok 228-bit, tiap blok pakai Fn otomatis. [file:1]
+        Payload dibagi blok 228-bit, tiap blok pakai Fn otomatis.
         """
-        bits_in = _bytes_to_bits_list(data)
-        bits_out = []
-        fn = 0
-
-        for i in range(0, len(bits_in), BLOCK_SIZE_BITS):
-            block = bits_in[i:i + BLOCK_SIZE_BITS]
-            keystream = self._generate_block_keystream(key_64bit, fn)
-            bits_out.extend(b ^ k for b, k in zip(block, keystream))
-            fn += 1
-
-        return _bits_list_to_bytes(bits_out)
+        bits_in   = np.unpackbits(np.frombuffer(data, dtype=np.uint8))
+        keystream = self._generate_all_keystream(key_64bit, bits_in.size)
+        bits_out  = (bits_in ^ keystream).astype(np.uint8)
+        return np.packbits(bits_out).tobytes()
 
     def decrypt(self, data: bytes, key_64bit: int) -> bytes:
-        return self.encrypt(data, key_64bit) 
+        return self.encrypt(data, key_64bit)
 
 
-
+# ─── BIT HELPERS (kept for compatibility) ─────────────────────────────────────
 
 def _bytes_to_bits_list(data: bytes) -> List[int]:
     bits = []
@@ -118,6 +123,7 @@ def _bytes_to_bits_list(data: bytes) -> List[int]:
         for i in range(7, -1, -1):
             bits.append((byte >> i) & 1)
     return bits
+
 
 def _bits_list_to_bytes(bits: List[int]) -> bytes:
     result = bytearray()
@@ -136,6 +142,7 @@ def _bits_list_to_bytes(bits: List[int]) -> bytes:
 
 def a51_encrypt_payload(payload: bytes, key_64bit: int) -> bytes:
     return A51().encrypt(payload, key_64bit)
+
 
 def a51_decrypt_payload(ciphertext: bytes, key_64bit: int) -> bytes:
     return A51().decrypt(ciphertext, key_64bit)
