@@ -32,9 +32,9 @@ TEXT      = "#eaeaea"
 MUTED     = "#8892a4"
 SUCCESS   = "#4ecca3"
 WARNING   = "#f5a623"
-BTN_BG    = "#0f3460"
-BTN_FG    = "#eaeaea"
-BTN_ACT   = "#e94560"
+BTN_BG    = "#16213e"
+BTN_FG    = "#ffffff"
+BTN_ACT   = "#ff2e63"
 
 DISPLAY_W = 420
 DISPLAY_H = 240
@@ -46,12 +46,24 @@ def _resize_for_display(frame: np.ndarray, w=DISPLAY_W, h=DISPLAY_H) -> ImageTk.
     pil   = Image.fromarray(rgb).resize((w, h), Image.LANCZOS)
     return ImageTk.PhotoImage(pil)
 
-
 def _make_btn(parent, text, command, bg=BTN_BG, fg=BTN_FG, **kw):
-    return tk.Button(parent, text=text, command=command,
-                     bg=bg, fg=fg, activebackground=BTN_ACT, activeforeground="white",
-                     relief="flat", padx=10, pady=4, cursor="hand2", **kw)
+    if "font" not in kw:
+        kw["font"] = ("Segoe UI", 9, "bold")
 
+    return tk.Button(
+        parent,
+        text=text,
+        command=command,
+        bg=bg,
+        fg=fg,
+        activebackground=BTN_ACT,
+        activeforeground="white",
+        relief="flat",
+        padx=10,
+        pady=4,
+        cursor="hand2",
+        **kw
+    )
 
 def _make_label(parent, text="", fg=TEXT, font=None, **kw):
     return tk.Label(parent, text=text, bg=kw.pop("bg", PANEL),
@@ -364,6 +376,17 @@ class StegoApp:
             extension = os.path.splitext(file_path)[1]
             filename  = os.path.basename(file_path)
 
+        # cek kapasitas sebelum lanjut
+        frames, _ = read_video_frames(self.video_path)
+        total_cap = sum(f.shape[0]*f.shape[1]*8 for f in frames) // 8
+
+        if len(msg) + 32 > total_cap:
+            messagebox.showerror(
+                "Error",
+                f"Payload terlalu besar!\n\nUkuran file: {len(msg)} bytes\nKapasitas: {total_cap} bytes"
+            )
+            return
+
         # Validate & parse keys on main thread
         use_encrypt = self.encrypt_var.get()
         use_random  = self.random_var.get()
@@ -493,6 +516,34 @@ class StegoApp:
             self.embed_status.config(text="✅  Embedding complete!", fg=SUCCESS)
 
         self._show_histogram(cover_frames, stego_frames, result["mse_list"])
+        self._show_mse_psnr_chart(result["mse_list"], result["psnr_per_frame"])
+
+    def _show_mse_psnr_chart(self, mse_list, psnr_list):
+        plt.style.use("dark_background")
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 3), facecolor=BG)
+
+        frames = list(range(len(mse_list)))
+
+        # MSE
+        ax1.plot(frames, mse_list)
+        ax1.set_title("MSE per Frame")
+
+        # PSNR
+        ax2.plot(frames, psnr_list)
+        ax2.set_title("PSNR per Frame")
+
+        for ax in [ax1, ax2]:
+            ax.set_facecolor(PANEL)
+
+        fig.tight_layout()
+
+        for w in self.chart_frame.winfo_children():
+            w.destroy()
+
+        canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
 
     def _embed_error(self, msg):
         self.embed_btn.config(state="normal", text="🔒  Embed Message")
@@ -952,6 +1003,14 @@ class StegoApp:
                             mse_list, psnr_list, mse_avg, psnr_avg)
         except Exception as exc:
             self.root.after(0, self._compare_error, str(exc))
+
+        if len(self.cmp_cover_frames) != len(self.cmp_stego_frames):
+            n = min(len(self.cmp_cover_frames), len(self.cmp_stego_frames))
+            cover = self.cmp_cover_frames[:n]
+            stego = self.cmp_stego_frames[:n]
+        else:
+            cover = self.cmp_cover_frames
+            stego = self.cmp_stego_frames
 
     def _compare_done(self, mse_list, psnr_list, mse_avg, psnr_avg):
         self.cmp_mse_list  = mse_list

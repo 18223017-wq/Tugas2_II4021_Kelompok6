@@ -214,4 +214,4 @@ def mse_psnr_video(original_frames, stego_frames):
     psnr_avg = psnr_frame(mse_avg)
     psnr_list = [psnr_frame(m) for m in mse_list]
 
-    return mse_avg, psnr_list, mse_avg, psnr_avg
+    return mse_list, psnr_list, mse_avg, psnr_avg

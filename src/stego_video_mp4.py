@@ -272,7 +272,6 @@ def _extract_header_sequential(frames: list) -> tuple:
 
 
 # ─── PUBLIC API ───────────────────────────────────────────────────────────────
-
 def embed_message(cover_path: str, output_path: str, message: bytes, is_text: bool,
                   extension: str = "", filename: str = "", use_encryption: bool = False,
                   a51_key: Optional[int] = None, use_random: bool = False,
@@ -288,39 +287,62 @@ def embed_message(cover_path: str, output_path: str, message: bytes, is_text: bo
 
     payload = message
     if use_encryption:
-        if a51_key is None: raise ValueError("Wait a51_key")
+        if a51_key is None:
+            raise ValueError("Wait a51_key")
         payload = a51_encrypt_payload(message, a51_key)
 
     seed = stego_key if stego_key is not None else 0
     total_cap = total_capacity_bytes(frames)
     needed = HEADER_SIZE + len(payload)
+
     if needed > total_cap:
         raise ValueError(f"Payload too large: {needed} > {total_cap}")
 
     header = encode_header(
-        is_text=is_text, is_encrypted=use_encryption, is_random=use_random,
-        extension=extension, filename=filename, payload_size=len(payload),
-        is_mp4=is_mp4, num_frames=len(frames)
+        is_text=is_text,
+        is_encrypted=use_encryption,
+        is_random=use_random,
+        extension=extension,
+        filename=filename,
+        payload_size=len(payload),
+        is_mp4=is_mp4,
+        num_frames=len(frames)
     )
 
+    # ── EMBED ──
     stego_frames, pixel_offset = _embed_header_sequential(frames, header)
+
     payload_bits = bytes_to_bits(payload)
     stego_frames = _embed_bits_with_pixel_offset(
-        stego_frames, payload_bits, pixel_offset=pixel_offset,
-        is_random=use_random, seed=seed
+        stego_frames,
+        payload_bits,
+        pixel_offset=pixel_offset,
+        is_random=use_random,
+        seed=seed
     )
 
+    # ── WRITE VIDEO ──
     write_video_frames(output_path, stego_frames, fps, mp4_crf=mp4_crf)
-    _, psnr_list, mse_avg, psnr_avg = mse_psnr_video(frames, stego_frames)
+
+    # ── METRICS (FIXED) ──
+    mse_list, psnr_list, mse_avg, psnr_avg = mse_psnr_video(frames, stego_frames)
 
     return {
-        "format": in_fmt.upper(), "total_capacity_bytes": total_cap,
-        "payload_size_bytes": len(payload), "header_size_bytes": HEADER_SIZE,
-        "total_embedded_bytes": needed, "mse_avg": mse_avg,
-        "psnr_avg": psnr_avg, "psnr_per_frame": psnr_list,
+        "format": in_fmt.upper(),
+        "total_capacity_bytes": total_cap,
+        "payload_size_bytes": len(payload),
+        "header_size_bytes": HEADER_SIZE,
+        "total_embedded_bytes": needed,
+
+        # ✅ FIX UTAMA
+        "mse_avg": mse_avg,
+        "mse_list": mse_list,
+
+        "psnr_avg": psnr_avg,
+        "psnr_per_frame": psnr_list,
+
         "lossless_mp4": (is_mp4 and mp4_crf == 0)
     }
-
 
 def extract_message(stego_path: str, a51_key: Optional[int] = None,
                     stego_key: Optional[int] = None) -> dict:
