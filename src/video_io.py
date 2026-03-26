@@ -2,6 +2,8 @@
 import cv2
 import numpy as np
 from typing import List, Tuple
+from concurrent.futures import ThreadPoolExecutor
+
 
 def read_video_frames(path: str) -> Tuple[List[np.ndarray], float]:
     """
@@ -12,17 +14,35 @@ def read_video_frames(path: str) -> Tuple[List[np.ndarray], float]:
     if not cap.isOpened():
         raise IOError(f"Cannot open video: {path}")
 
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    frames = []
+    fps        = cap.get(cv2.CAP_PROP_FPS)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    h          = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    w          = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        frames.append(frame)
+    # Pre-allocate buffer when frame count is known and reliable
+    if frame_count > 0 and h > 0 and w > 0:
+        buf    = np.empty((frame_count, h, w, 3), dtype=np.uint8)
+        actual = 0
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if actual < frame_count:
+                buf[actual] = frame
+            actual += 1
+        cap.release()
+        frames = [buf[i] for i in range(min(actual, frame_count))]
+    else:
+        frames = []
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frames.append(frame)
+        cap.release()
 
-    cap.release()
     return frames, fps
+
 
 def write_video_frames(path: str, frames: List[np.ndarray], fps: float):
     """
@@ -31,10 +51,9 @@ def write_video_frames(path: str, frames: List[np.ndarray], fps: float):
     if not frames:
         raise ValueError("frames is empty")
 
-    h, w, c = frames[0].shape
-    # FFV1: lossless video codec (ideal untuk test) [web:38]
-    fourcc = cv2.VideoWriter_fourcc(*"XVID")
-    out = cv2.VideoWriter(path, fourcc, fps, (w, h))
+    h, w, _ = frames[0].shape
+    fourcc   = cv2.VideoWriter_fourcc(*"XVID")
+    out      = cv2.VideoWriter(path, fourcc, fps, (w, h))
 
     for f in frames:
         out.write(f)
@@ -42,79 +61,109 @@ def write_video_frames(path: str, frames: List[np.ndarray], fps: float):
     out.release()
 
 
+# ─── METRICS ──────────────────────────────────────────────────────────────────
+
+def _mse_psnr_pair(args: Tuple[np.ndarray, np.ndarray]) -> Tuple[float, float]:
+    """Compute MSE + PSNR for one (cover, stego) pair — used in parallel map."""
+    ref, stego = args
+    diff    = ref.astype(np.float32) - stego.astype(np.float32)
+    mse_val = float(np.mean(diff * diff))
+    if mse_val == 0:
+        return mse_val, float('inf')
+    psnr_val = float(10.0 * np.log10(65025.0 / mse_val))  # 255^2 = 65025
+    return mse_val, psnr_val
+
+
 def mse_frame(ref: np.ndarray, stego: np.ndarray) -> float:
     """
-    Hitung MSE antara dua frame (BGR, uint8, ukuran sama). [web:35][file:1]
+    Hitung MSE antara dua frame (BGR, uint8, ukuran sama).
     """
     if ref.shape != stego.shape:
         raise ValueError("Ukuran frame berbeda")
-
     diff = ref.astype(np.float32) - stego.astype(np.float32)
-    mse_val = np.mean(diff ** 2)
-    return float(mse_val)
+    return float(np.mean(diff * diff))
+
 
 def psnr_frame(ref: np.ndarray, stego: np.ndarray) -> float:
     """
-    Hitung PSNR (dalam dB) untuk dua frame. [web:32][web:38][file:1]
+    Hitung PSNR (dalam dB) untuk dua frame.
     """
     mse_val = mse_frame(ref, stego)
     if mse_val == 0:
         return float('inf')
+    return float(10.0 * np.log10(65025.0 / mse_val))
 
-    max_i = 255.0  # intensitas maksimum piksel 8-bit [file:1]
-    psnr_val = 10 * np.log10((max_i ** 2) / mse_val)
-    return float(psnr_val)
 
-def mse_psnr_video(cover_frames: List[np.ndarray],
-                   stego_frames: List[np.ndarray]) -> Tuple[List[float], List[float], float, float]:
+def mse_psnr_video(
+    cover_frames: List[np.ndarray],
+    stego_frames: List[np.ndarray]
+) -> Tuple[List[float], List[float], float, float]:
     """
     Hitung MSE & PSNR per frame dan rata-rata untuk dua video (list frame).
-    Diasumsikan jumlah frame sama. [file:1]
+    Menggunakan thread pool untuk mempercepat komputasi paralel.
     """
     if len(cover_frames) != len(stego_frames):
         raise ValueError("Jumlah frame video berbeda")
 
-    mse_list = []
-    psnr_list = []
+    pairs = list(zip(cover_frames, stego_frames))
 
-    for c, s in zip(cover_frames, stego_frames):
-        mse_val = mse_frame(c, s)
-        psnr_val = psnr_frame(c, s)
-        mse_list.append(mse_val)
-        psnr_list.append(psnr_val)
+    # Parallel computation across frames using I/O-friendly thread pool
+    workers = min(8, len(pairs))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(_mse_psnr_pair, pairs))
 
-    mse_avg = float(np.mean(mse_list))
-    psnr_avg = float(np.mean(psnr_list))
+    mse_list  = [r[0] for r in results]
+    psnr_list = [r[1] for r in results]
+    mse_avg   = float(np.mean(mse_list))
+    psnr_avg  = float(np.mean([p for p in psnr_list if not np.isinf(p)] or [float('inf')]))
 
     return mse_list, psnr_list, mse_avg, psnr_avg
 
-def color_histogram_frame(frame: np.ndarray, bins: int = 256) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+
+# ─── HISTOGRAMS ───────────────────────────────────────────────────────────────
+
+def color_histogram_frame(
+    frame: np.ndarray, bins: int = 256
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Hitung histogram warna B, G, R untuk satu frame.
-    Return: (hist_b, hist_g, hist_r) dengan shape (bins,1). [web:33][web:36][web:39][file:1]
+    Return: (hist_b, hist_g, hist_r) dengan shape (bins,1).
     """
-    channels = cv2.split(frame)  # B, G, R
-    hist_b = cv2.calcHist([channels[0]], [0], None, [bins], [0, 256])
-    hist_g = cv2.calcHist([channels[1]], [0], None, [bins], [0, 256])
-    hist_r = cv2.calcHist([channels[2]], [0], None, [bins], [0, 256])
+    channels = cv2.split(frame)
+    hist_b   = cv2.calcHist([channels[0]], [0], None, [bins], [0, 256])
+    hist_g   = cv2.calcHist([channels[1]], [0], None, [bins], [0, 256])
+    hist_r   = cv2.calcHist([channels[2]], [0], None, [bins], [0, 256])
     return hist_b, hist_g, hist_r
 
-def color_histogram_video(frames: List[np.ndarray], bins: int = 256) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+
+def _hist_frame_numpy(frame: np.ndarray, bins: int = 256):
+    """Fast per-frame histogram via NumPy (avoids OpenCV call overhead in loops)."""
+    b, g, r = frame[:, :, 0], frame[:, :, 1], frame[:, :, 2]
+    hb = np.bincount(b.ravel(), minlength=bins).reshape(bins, 1).astype(np.float32)
+    hg = np.bincount(g.ravel(), minlength=bins).reshape(bins, 1).astype(np.float32)
+    hr = np.bincount(r.ravel(), minlength=bins).reshape(bins, 1).astype(np.float32)
+    return hb, hg, hr
+
+
+def color_histogram_video(
+    frames: List[np.ndarray], bins: int = 256
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Hitung histogram rata-rata B, G, R untuk seluruh frame video. [file:1]
+    Hitung histogram rata-rata B, G, R untuk seluruh frame video.
+    Menggunakan NumPy bincount (lebih cepat dari cv2.calcHist dalam loop).
     """
     if not frames:
         raise ValueError("frames is empty")
 
-    hist_b_sum = np.zeros((bins, 1), dtype=np.float32)
-    hist_g_sum = np.zeros((bins, 1), dtype=np.float32)
-    hist_r_sum = np.zeros((bins, 1), dtype=np.float32)
+    n             = len(frames)
+    hist_b_sum    = np.zeros((bins, 1), dtype=np.float32)
+    hist_g_sum    = np.zeros((bins, 1), dtype=np.float32)
+    hist_r_sum    = np.zeros((bins, 1), dtype=np.float32)
 
     for f in frames:
-        hb, hg, hr = color_histogram_frame(f, bins=bins)
+        hb, hg, hr = _hist_frame_numpy(f, bins=bins)
         hist_b_sum += hb
         hist_g_sum += hg
         hist_r_sum += hr
 
-    n = len(frames)
     return hist_b_sum / n, hist_g_sum / n, hist_r_sum / n

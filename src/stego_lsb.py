@@ -2,38 +2,92 @@
 import numpy as np
 from typing import Iterable, Tuple
 
+
 def bytes_to_bits(data: bytes) -> np.ndarray:
     bits = np.unpackbits(np.frombuffer(data, dtype=np.uint8))
     return bits.astype(np.uint8)
 
+
 def bits_to_bytes(bits: Iterable[int]) -> bytes:
     bits = np.array(bits, dtype=np.uint8)
-    # padding ke kelipatan 8
     if bits.size % 8 != 0:
         pad_len = 8 - (bits.size % 8)
         bits = np.concatenate([bits, np.zeros(pad_len, dtype=np.uint8)])
     return np.packbits(bits).tobytes()
 
+
 def capacity_332(frame: np.ndarray) -> int:
-    """
-    Kapasitas bit untuk satu frame dengan skema 3-3-2.
-    """
     h, w, _ = frame.shape
     return h * w * 8  # 3+3+2 = 8 bit per piksel
 
-def _embed_channel(channel_val: int, bits: np.ndarray, offset: int, n: int):
-    """Embed n bit mulai dari offset ke channel_val (dari LSB ke atas)."""
-    val = channel_val
-    for k in range(n):
-        if offset + k >= bits.size:
-            break
-        bit = int(bits[offset + k])
-        val = (val & ~(1 << k)) | (bit << k)
-    return val & 0xFF
 
-def _extract_channel(channel_val: int, n: int) -> list:
-    """Ekstrak n bit dari channel_val (dari LSB ke atas)."""
-    return [(channel_val >> k) & 1 for k in range(n)]
+# ─── INTERNAL VECTORIZED HELPERS ──────────────────────────────────────────────
+
+def _embed_332_vectorized(pixels: np.ndarray, bits: np.ndarray) -> np.ndarray:
+    """
+    Embed bits into a flat array of pixels (shape: [N, 3]) using 3-3-2 scheme.
+    Fully vectorized — no Python-level loops over pixels.
+    """
+    n_pixels = pixels.shape[0]
+    n_bits   = bits.size
+
+    # Pad bits to full pixel boundary (multiple of 8)
+    full_bits = n_pixels * 8
+    if n_bits < full_bits:
+        padded = np.zeros(full_bits, dtype=np.uint8)
+        padded[:n_bits] = bits
+        bits = padded
+
+    # Reshape bits → [N, 8]: columns 0-2 → R (3 LSBs), 3-5 → G (3 LSBs), 6-7 → B (2 LSBs)
+    bits_2d = bits[:full_bits].reshape(n_pixels, 8)
+
+    result = pixels.copy().astype(np.uint8)
+
+    # R channel: embed 3 bits (bits 0,1,2) into bits 0,1,2 of R
+    r = result[:, 0].astype(np.int32)
+    r = (r & ~0b111) | (bits_2d[:, 0] | (bits_2d[:, 1] << 1) | (bits_2d[:, 2] << 2))
+    result[:, 0] = r.astype(np.uint8)
+
+    # G channel: embed 3 bits (bits 3,4,5) into bits 0,1,2 of G
+    g = result[:, 1].astype(np.int32)
+    g = (g & ~0b111) | (bits_2d[:, 3] | (bits_2d[:, 4] << 1) | (bits_2d[:, 5] << 2))
+    result[:, 1] = g.astype(np.uint8)
+
+    # B channel: embed 2 bits (bits 6,7) into bits 0,1 of B
+    b = result[:, 2].astype(np.int32)
+    b = (b & ~0b11) | (bits_2d[:, 6] | (bits_2d[:, 7] << 1))
+    result[:, 2] = b.astype(np.uint8)
+
+    return result
+
+
+def _extract_332_vectorized(pixels: np.ndarray, num_bits: int) -> np.ndarray:
+    """
+    Extract bits from a flat pixel array (shape: [N, 3]) using 3-3-2 scheme.
+    Fully vectorized — no Python-level loops.
+    """
+    n_pixels = pixels.shape[0]
+    bits_2d  = np.empty((n_pixels, 8), dtype=np.uint8)
+
+    r = pixels[:, 0].astype(np.uint8)
+    g = pixels[:, 1].astype(np.uint8)
+    b = pixels[:, 2].astype(np.uint8)
+
+    bits_2d[:, 0] = (r >> 0) & 1
+    bits_2d[:, 1] = (r >> 1) & 1
+    bits_2d[:, 2] = (r >> 2) & 1
+
+    bits_2d[:, 3] = (g >> 0) & 1
+    bits_2d[:, 4] = (g >> 1) & 1
+    bits_2d[:, 5] = (g >> 2) & 1
+
+    bits_2d[:, 6] = (b >> 0) & 1
+    bits_2d[:, 7] = (b >> 1) & 1
+
+    return bits_2d.ravel()[:num_bits]
+
+
+# ─── PUBLIC: SEQUENTIAL ───────────────────────────────────────────────────────
 
 def embed_bits_sequential_332(frame: np.ndarray, bits: np.ndarray) -> np.ndarray:
     h, w, _ = frame.shape
@@ -41,26 +95,14 @@ def embed_bits_sequential_332(frame: np.ndarray, bits: np.ndarray) -> np.ndarray
     if bits.size > cap:
         raise ValueError(f"Payload terlalu besar: {bits.size} > {cap}")
 
-    stego = frame.copy().astype(np.uint8)
-    idx = 0
+    pixels = frame.reshape(-1, 3)          # [H*W, 3]
+    n_pixels_needed = int(np.ceil(bits.size / 8))
 
-    for i in range(h):
-        for j in range(w):
-            if idx >= bits.size:
-                return stego
-
-            r = int(stego[i, j, 0])
-            g = int(stego[i, j, 1])
-            b = int(stego[i, j, 2])
-
-            r = _embed_channel(r, bits, idx,     3)
-            g = _embed_channel(g, bits, idx + 3, 3)
-            b = _embed_channel(b, bits, idx + 6, 2)
-
-            stego[i, j] = [r, g, b]
-            idx += 8  # 3+3+2 per piksel
-
-    return stego
+    stego_pixels = pixels.copy()
+    stego_pixels[:n_pixels_needed] = _embed_332_vectorized(
+        pixels[:n_pixels_needed], bits
+    )
+    return stego_pixels.reshape(h, w, 3).astype(np.uint8)
 
 
 def extract_bits_sequential_332(frame: np.ndarray, num_bits: int) -> np.ndarray:
@@ -69,34 +111,22 @@ def extract_bits_sequential_332(frame: np.ndarray, num_bits: int) -> np.ndarray:
     if num_bits > cap:
         raise ValueError(f"Meminta {num_bits} bit, tapi kapasitas frame {cap}")
 
-    bits = []
+    n_pixels_needed = int(np.ceil(num_bits / 8))
+    pixels = frame.reshape(-1, 3)[:n_pixels_needed]
+    return _extract_332_vectorized(pixels, num_bits)
 
-    for i in range(h):
-        for j in range(w):
-            if len(bits) >= num_bits:
-                break
 
-            r = int(frame[i, j, 0])
-            g = int(frame[i, j, 1])
-            b = int(frame[i, j, 2])
-
-            bits.extend(_extract_channel(r, 3))
-            bits.extend(_extract_channel(g, 3))
-            bits.extend(_extract_channel(b, 2))
-
-        if len(bits) >= num_bits:
-            break
-
-    return np.array(bits[:num_bits], dtype=np.uint8)
+# ─── PUBLIC: RANDOM ───────────────────────────────────────────────────────────
 
 def pixel_indices_random(h: int, w: int, seed: int) -> np.ndarray:
     """
-    Generate urutan indeks piksel acak (flattened index) untuk mode acak. [file:1]
+    Generate urutan indeks piksel acak (flattened index) untuk mode acak.
     """
     rng = np.random.default_rng(seed)
     idx = np.arange(h * w)
     rng.shuffle(idx)
     return idx
+
 
 def embed_bits_random_332(frame: np.ndarray, bits: np.ndarray, seed: int) -> np.ndarray:
     h, w, _ = frame.shape
@@ -104,45 +134,18 @@ def embed_bits_random_332(frame: np.ndarray, bits: np.ndarray, seed: int) -> np.
     if bits.size > cap:
         raise ValueError(f"Payload terlalu besar: {bits.size} > {cap}")
 
-    stego = frame.copy().astype(np.uint8)
-    pix_idx = pixel_indices_random(h, w, seed)
+    n_pixels_needed = int(np.ceil(bits.size / 8))
+    pix_idx = pixel_indices_random(h, w, seed)[:n_pixels_needed]
 
-    idx = 0
-    for flat in pix_idx:
-        if idx >= bits.size:
-            break
-        i, j = divmod(int(flat), w)
-
-        r = int(stego[i, j, 0])
-        g = int(stego[i, j, 1])
-        b = int(stego[i, j, 2])
-
-        r = _embed_channel(r, bits, idx,     3)
-        g = _embed_channel(g, bits, idx + 3, 3)
-        b = _embed_channel(b, bits, idx + 6, 2)
-
-        stego[i, j] = [r, g, b]
-        idx += 8
-
-    return stego
+    pixels = frame.reshape(-1, 3).copy()
+    pixels[pix_idx] = _embed_332_vectorized(pixels[pix_idx], bits)
+    return pixels.reshape(h, w, 3).astype(np.uint8)
 
 
 def extract_bits_random_332(frame: np.ndarray, num_bits: int, seed: int) -> np.ndarray:
     h, w, _ = frame.shape
-    pix_idx = pixel_indices_random(h, w, seed)
+    n_pixels_needed = int(np.ceil(num_bits / 8))
+    pix_idx = pixel_indices_random(h, w, seed)[:n_pixels_needed]
 
-    bits = []
-    for flat in pix_idx:
-        if len(bits) >= num_bits:
-            break
-        i, j = divmod(int(flat), w)
-
-        r = int(frame[i, j, 0])
-        g = int(frame[i, j, 1])
-        b = int(frame[i, j, 2])
-
-        bits.extend(_extract_channel(r, 3))
-        bits.extend(_extract_channel(g, 3))
-        bits.extend(_extract_channel(b, 2))
-
-    return np.array(bits[:num_bits], dtype=np.uint8)
+    pixels = frame.reshape(-1, 3)[pix_idx]
+    return _extract_332_vectorized(pixels, num_bits)
