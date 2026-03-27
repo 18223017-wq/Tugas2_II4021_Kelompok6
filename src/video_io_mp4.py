@@ -34,16 +34,28 @@ def read_video_frames(path: str) -> Tuple[List[np.ndarray], float]:
 
 
 def write_video_frames(path: str, frames: List[np.ndarray], fps: float,
-                       mp4_crf: int = 0):
+                       mp4_crf: int = 0, embedded_frame_count: int = 0):
     """
     Tulis list frame ke file AVI atau MP4.
+    
+    Args:
+        path: Output file path
+        frames: List of BGR frames
+        fps: Frames per second
+        mp4_crf: CRF value for MP4 lossy encoding (ignored if 0)
+        embedded_frame_count: Number of frames from start containing embedded data.
+                            If > 0, those frames use lossless encoding while 
+                            remaining frames use lossy (CRF 18).
     """
     if not frames:
         raise ValueError("frames is empty")
 
     fmt = get_format(path)
     if fmt == 'mp4':
-        _write_mp4_frames_lossless(path, frames, fps, crf=mp4_crf)
+        if embedded_frame_count > 0:
+            _write_mp4_frames_selective(path, frames, fps, embedded_frame_count)
+        else:
+            _write_mp4_frames_lossless(path, frames, fps, crf=mp4_crf)
     else:
         _write_avi_frames(path, frames, fps)
 
@@ -92,6 +104,109 @@ def _check_ffmpeg():
             "Linux:   sudo apt install ffmpeg\n"
             "Mac:     brew install ffmpeg"
         )
+
+
+def _write_mp4_frames_selective(path: str, frames: List[np.ndarray], fps: float,
+                                embedded_frame_count: int):
+    """
+    Tulis MP4 dengan selective lossless/lossy encoding untuk kompresi maksimal.
+    
+    Strategy:
+    - Frame 0 to embedded_frame_count-1: Lossless (CRF 0) lindungi LSB data
+    - Frame embedded_frame_count onwards: Lossy (CRF 23) compress signifikan
+    - Concat dengan -c copy (instant, no re-encode)
+    """
+    _check_ffmpeg()
+    
+    if embedded_frame_count <= 0 or embedded_frame_count >= len(frames):
+        # Jika semua frame ada data atau tidak ada data, encode semua lossless
+        _write_mp4_frames_lossless(path, frames, fps, crf=0)
+        return
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        lossless_file = os.path.join(tmpdir, "lossless.mp4")
+        lossy_file = os.path.join(tmpdir, "lossy.mp4")
+        
+        # Part 1: Lossless (frames dengan embedded data)
+        lossless_frames = frames[:embedded_frame_count]
+        _write_mp4_frames_lossless(lossless_file, lossless_frames, fps, crf=0)
+        
+        # Part 2: Lossy (frames tanpa embedded data)
+        lossy_frames = frames[embedded_frame_count:]
+        _write_mp4_frames_simple_lossy(lossy_file, lossy_frames, fps, crf=23)
+        
+        # Concat dengan -c copy (instant, tidak re-encode)
+        _concatenate_mp4_videos(lossless_file, lossy_file, path)
+        
+        print(f"[SELECTIVE] {embedded_frame_count} lossless + {len(lossy_frames)} lossy → {os.path.getsize(path):,} bytes")
+
+
+def _write_mp4_frames_selective_lossy(path: str, frames: List[np.ndarray],
+                                      fps: float, crf: int = 2):
+    """
+    Deprecated: CRF 2 still corrupts LSBs. Kept for reference only.
+    """
+    pass
+
+
+def _concatenate_mp4_videos(part1: str, part2: str, output: str):
+    """
+    Concatenate two MP4 files using ffmpeg concat demuxer (instant, no re-encode).
+    """
+    _check_ffmpeg()
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        concat_file = os.path.join(tmpdir, "concat.txt")
+        with open(concat_file, 'w') as f:
+            f.write(f"file '{os.path.abspath(part1)}'\n")
+            f.write(f"file '{os.path.abspath(part2)}'\n")
+        
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", concat_file,
+            "-c", "copy",
+            output
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"ffmpeg concat failed:\n{result.stderr.decode()}"
+            )
+
+
+def _write_mp4_frames_simple_lossy(path: str, frames: List[np.ndarray],
+                                   fps: float, crf: int = 23):
+    """
+    Tulis MP4 dengan lossy encoding (CRF configurable).
+    Untuk frames yang tidak contain embedded data.
+    """
+    _check_ffmpeg()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        frame_pattern = os.path.join(tmpdir, "frame_%08d.png")
+        for i, frame in enumerate(frames):
+            fname = os.path.join(tmpdir, f"frame_{i+1:08d}.png")
+            cv2.imwrite(fname, frame)
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-framerate", str(fps),
+            "-i", frame_pattern,
+            "-c:v", "libx264",
+            "-preset", "medium",
+            "-crf", str(crf),
+            "-pix_fmt", "yuv420p",
+            path
+        ]
+
+        result = subprocess.run(cmd, capture_output=True)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"ffmpeg lossy encoding failed:\n{result.stderr.decode()}"
+            )
 
 
 def _read_mp4_frames_lossless(path: str) -> Tuple[List[np.ndarray], float]:
@@ -157,15 +272,13 @@ def _write_mp4_frames_lossless(path: str, frames: List[np.ndarray],
             cv2.imwrite(fname, frame)
 
         if crf == 0:
-            # FIX: Gunakan libx264rgb, yang didesain khusus untuk RGB lossless.
-            # Hapus -pix_fmt gbrp manual, biarkan encoder pilih best match (bgr24/rgb24/gbrp)
-            # yang kompatibel dengan PNG input.
+            # FIX: Gunakan libx264rgb dengan preset "slow" untuk kompresi maksimal
             cmd = [
                 "ffmpeg", "-y",
                 "-framerate", str(fps),
                 "-i", frame_pattern,
-                "-c:v", "libx264rgb", # Special encoder for RGB
-                "-preset", "ultrafast",
+                "-c:v", "libx264rgb",
+                "-preset", "slow",
                 "-crf", "0",
                 path
             ]
@@ -178,15 +291,27 @@ def _write_mp4_frames_lossless(path: str, frames: List[np.ndarray],
                 "-c:v", "libx264",
                 "-preset", "medium",
                 "-crf", str(crf),
-                "-pix_fmt", "yuv420p", # Standard compatibility
+                "-pix_fmt", "yuv420p",
                 path
             ]
 
+        # DEBUG
+        print(f"\n[FFMPEG] Command: {' '.join(cmd)}")
+        print(f"[FFMPEG] Frames: {len(frames)}, FPS: {fps}")
+        
         result = subprocess.run(cmd, capture_output=True)
         if result.returncode != 0:
+            stderr_msg = result.stderr.decode()
+            print(f"\n[DEBUG] ffmpeg failed with return code {result.returncode}")
+            print(f"[DEBUG] stderr: {stderr_msg[-500:]}")
             raise RuntimeError(
-                f"ffmpeg gagal menulis MP4:\n{result.stderr.decode()}"
+                f"ffmpeg gagal menulis MP4:\n{stderr_msg}"
             )
+        
+        # Verify output
+        import os as os_module
+        output_size = os_module.path.getsize(path)
+        print(f"[FFMPEG] Output: {output_size:,} bytes")
 
 
 # ─── METRICS ──────────────────────────────────────────────────────────────────

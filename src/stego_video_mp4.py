@@ -86,6 +86,22 @@ def total_capacity_bytes(frames: list) -> int:
     return total_bits // 8
 
 
+def _calculate_embedded_frame_count(total_bits: int, frame_capacity_bits: int) -> int:
+    """
+    Calculate how many frames starting from frame 0 will contain embedded data.
+    
+    Args:
+        total_bits: Total bits to embed (header + payload)
+        frame_capacity_bits: Bits per frame capacity
+    
+    Returns:
+        Number of frames needed to hold all embedded bits
+    """
+    if total_bits == 0:
+        return 0
+    return (total_bits + frame_capacity_bits - 1) // frame_capacity_bits
+
+
 # ─── LOW-LEVEL BIT EMBEDDING WITH PIXEL OFFSET ────────────────────────────────
 
 def _embed_bits_with_pixel_offset(frames: list, bits: np.ndarray,
@@ -310,7 +326,18 @@ def embed_message(cover_path: str, output_path: str, message: bytes, is_text: bo
         is_random=use_random, seed=seed
     )
 
-    write_video_frames(output_path, stego_frames, fps, mp4_crf=mp4_crf)
+    # Calculate how many frames contain embedded data for selective encoding
+    total_bits_embedded = HEADER_BITS + payload_bits.size
+    frame_capacity_bits = capacity_332(frames[0])
+    embedded_frame_count = _calculate_embedded_frame_count(total_bits_embedded, frame_capacity_bits)
+
+    # For MP4, pass embedded_frame_count to enable selective lossless/lossy encoding
+    if is_mp4:
+        write_video_frames(output_path, stego_frames, fps, mp4_crf=mp4_crf, 
+                          embedded_frame_count=embedded_frame_count)
+    else:
+        write_video_frames(output_path, stego_frames, fps, mp4_crf=mp4_crf)
+
     _, psnr_list, mse_avg, psnr_avg = mse_psnr_video(frames, stego_frames)
 
     return {
@@ -318,7 +345,8 @@ def embed_message(cover_path: str, output_path: str, message: bytes, is_text: bo
         "payload_size_bytes": len(payload), "header_size_bytes": HEADER_SIZE,
         "total_embedded_bytes": needed, "mse_avg": mse_avg,
         "psnr_avg": psnr_avg, "psnr_per_frame": psnr_list,
-        "lossless_mp4": (is_mp4 and mp4_crf == 0)
+        "lossless_mp4": (is_mp4 and mp4_crf == 0),
+        "embedded_frame_count": embedded_frame_count if is_mp4 else None
     }
 
 
