@@ -3,7 +3,7 @@
 > **Tugas 2 — II4021 Kriptografi dan Koding**  
 > Kelompok 6
 
-Aplikasi steganografi video yang menyembunyikan pesan (teks maupun file) ke dalam video AVI/MP4 menggunakan metode **Modified LSB 3-3-2** dengan enkripsi opsional **A5/1 stream cipher**.
+Aplikasi steganografi video yang menyembunyikan pesan (teks maupun file) ke dalam video AVI/MP4 menggunakan metode **Modified LSB** (1-1-1, 3-3-2, 4-4-4) dengan enkripsi opsional **A5/1 stream cipher**.
 
 ---
 
@@ -12,7 +12,7 @@ Aplikasi steganografi video yang menyembunyikan pesan (teks maupun file) ke dala
 | Fitur                        | Deskripsi                                                                      |
 |------------------------------|--------------------------------------------------------------------------------|
 | **Steganografi Video**       | Embed pesan teks atau file biner ke dalam video AVI dan MP4                    |
-| **Modified LSB 3-3-2**       | Menyisipkan 8 bit per piksel (3 bit di R, 3 bit di G, 2 bit di B)              |
+| **3 Metode LSB**             | 1-1-1 (3 bit/px), 3-3-2 (8 bit/px), 4-4-4 (12 bit/px)                        |
 | **Enkripsi A5/1**            | Stream cipher berbasis GSM A5/1 dengan kunci 64-bit                            |
 | **Mode Sequential & Random** | Penyisipan piksel berurutan atau acak (dengan stego key)                       |
 | **Selective Encoding**       | Frame berisi data = lossless, frame kosong = lossy → ukuran file lebih kecil   |
@@ -29,14 +29,17 @@ Tugas2_II4021_Kelompok6/
 ├── requirements.txt            # Dependensi Python
 ├── src/
 │   ├── a51_cipher.py           # Implementasi A5/1 stream cipher
-│   ├── stego_lsb.py            # LSB 3-3-2 embedding/extraction (vectorized)
+│   ├── stego_lsb_utils.py      # Shared utilities & method registry
+│   ├── stego_lsb_111.py        # LSB 1-1-1 embedding/extraction
+│   ├── stego_lsb_332.py        # LSB 3-3-2 embedding/extraction
+│   ├── stego_lsb_444.py        # LSB 4-4-4 embedding/extraction
 │   ├── stego_video.py          # Steganografi video — AVI
 │   ├── stego_video_mp4.py      # Steganografi video — MP4
 │   ├── video_io.py             # Video I/O — AVI (FFV1 via ffmpeg)
 │   └── video_io_mp4.py         # Video I/O — MP4 (libx264rgb via ffmpeg)
 ├── tests/
 │   ├── test_a51_cipher.py      # Unit test A5/1
-│   ├── test_stego_lsb.py       # Unit test LSB 3-3-2
+│   ├── test_stego_lsb.py       # Unit test LSB (semua metode)
 │   ├── test_stego_video.py     # Unit test steganografi AVI
 │   ├── test_mp4.py             # Unit test steganografi MP4
 │   └── test_video_io.py        # Unit test video I/O
@@ -92,11 +95,12 @@ pytest tests/ -v
 
 1. Buka tab **📥 Embed**
 2. Klik **Select Cover Video** — pilih file `.avi` atau `.mp4`
-3. Masukkan pesan teks di text box, **atau** klik **Select File to Embed** untuk menyisipkan file biner
-4. (Opsional) Aktifkan **A5/1 Encryption** dan masukkan kunci 64-bit, contoh: `0x123456789ABCDEF0`
-5. (Opsional) Aktifkan **Random Pixel Order** dan masukkan stego key (integer)
-6. Klik **🔒 Embed Message** → pilih lokasi output
-7. File kunci otomatis disimpan sebagai `*_keys.txt` di samping output video
+3. Pilih **LSB Method** dari dropdown: `1-1-1`, `3-3-2`, atau `4-4-4`
+4. Masukkan pesan teks di text box, **atau** klik **Select File to Embed** untuk menyisipkan file biner
+5. (Opsional) Aktifkan **A5/1 Encryption** dan masukkan kunci 64-bit, contoh: `0x123456789ABCDEF0`
+6. (Opsional) Aktifkan **Random Pixel Order** dan masukkan stego key (integer)
+7. Klik **🔒 Embed Message** → pilih lokasi output
+8. File kunci otomatis disimpan sebagai `*_keys.txt` di samping output video
 
 ### Extract Pesan
 
@@ -106,6 +110,7 @@ pytest tests/ -v
 4. Masukkan **Stego Key** jika mode random digunakan
 5. Klik **🔓 Extract Message**
 6. Pesan teks ditampilkan langsung; file biner akan diminta lokasi Save As
+7. Metode LSB yang digunakan akan terdeteksi secara otomatis dari header
 
 ---
 
@@ -121,8 +126,9 @@ pytest tests/ -v
                           │
                           ▼
                     ┌─────────────┐
-                    │  LSB 3-3-2  │ ───▶ Embed ke frame video
-                    │  Embedding  │
+                    │  LSB Embed  │ ───▶ Embed ke frame video
+                    │ 1-1-1/3-3-2│      (metode dipilih user)
+                    │  /4-4-4    │
                     └─────────────┘
                           │
                           ▼
@@ -132,17 +138,23 @@ pytest tests/ -v
                     └─────────────┘
 ```
 
-### Modified LSB 3-3-2
+### Metode LSB
 
-Setiap piksel menyimpan **8 bit** data:
+Setiap metode menyisipkan jumlah bit yang berbeda per piksel:
 
-| Channel | Bits Disimpan|    Mask   |
-|---------|--------------|-----------|
-| Red     | 3 LSBs       | `& 0b111` |
-| Green   | 3 LSBs       | `& 0b111` |
-| Blue    | 2 LSBs       | `& 0b11`  |
+| Metode  | R (LSBs) | G (LSBs) | B (LSBs) | Bit/Piksel | Karakteristik                    |
+|---------|----------|----------|----------|------------|----------------------------------|
+| **1-1-1** | 1      | 1        | 1        | 3          | Distorsi minimal, kapasitas kecil |
+| **3-3-2** | 3      | 3        | 2        | 8          | Keseimbangan kapasitas & stealth  |
+| **4-4-4** | 4      | 4        | 4        | 12         | Kapasitas maksimal, distorsi besar|
 
-Kapasitas per frame = `width × height × 8 bits`
+**Kapasitas per frame** (1920×1080):
+
+| Metode  | Per Frame   | Per 30 Frame |
+|---------|-------------|--------------|
+| 1-1-1   | ~778 KB     | ~22.8 MB     |
+| 3-3-2   | ~2.07 MB    | ~60.7 MB     |
+| 4-4-4   | ~3.11 MB    | ~91.1 MB     |
 
 ### Selective Encoding (Pengurangan Ukuran File)
 
@@ -193,6 +205,7 @@ pytest tests/test_a51_cipher.py -v
 pytest tests/test_stego_lsb.py -v
 pytest tests/test_stego_video.py -v
 pytest tests/test_mp4.py -v
+pytest tests/test_video_io.py -v
 ```
 
 ---
