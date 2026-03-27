@@ -11,9 +11,15 @@ import datetime
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
 
-from src.stego_video import embed_message, extract_message
-from src.video_io import read_video_frames, color_histogram_video, mse_psnr_video
-from src.stego_lsb import capacity_332
+from src.stego_video     import embed_message as _embed_avi, extract_message as _extract_avi
+from src.stego_video_mp4 import embed_message as _embed_mp4, extract_message as _extract_mp4
+from src.video_io_mp4    import read_video_frames         
+from src.video_io        import color_histogram_video, mse_psnr_video
+from src.stego_lsb       import capacity_332
+
+def _fmt_of(path):
+    """Return lowercase extension without dot: 'avi' or 'mp4'."""
+    return os.path.splitext(path)[1].lower().lstrip('.')
 
 # ─── PALETTE ──────────────────────────────────────────────────────────────────
 BG      = "#1a1a2e"
@@ -71,12 +77,19 @@ class StegoApp:
         self.playing           = False
         self.video_selected    = False
         self.video_path        = None
+        self.video_format      = None   # 'avi' or 'mp4'
         self._play_job         = None
         self._capacity_bytes   = 0
         self._embed_file_path  = None
         self._embed_file_bytes = 0
 
-
+        self.cmp_cover_frames = []
+        self.cmp_stego_frames = []
+        self.cmp_cover_path   = None
+        self.cmp_stego_path   = None
+        self.cmp_idx          = 0
+        self.cmp_mse_list     = []
+        self.cmp_psnr_list    = []
 
         self._apply_style()
         self._setup_ui()
@@ -284,7 +297,7 @@ class StegoApp:
             if self._play_job:
                 self.root.after_cancel(self._play_job); self._play_job = None
             self.playing = False; self.video_path = None; self.video_frames = []
-            self.video_selected = False; self._capacity_bytes = 0
+            self.video_selected = False; self._capacity_bytes = 0; self.video_format = None
             self.embed_canvas.config(image="")
             self.embed_video_lbl.config(text="No video selected", fg=MUTED)
             self.embed_select_btn.config(text="📂  Select Cover Video", state="normal")
@@ -295,15 +308,18 @@ class StegoApp:
         try:
             frames, fps = read_video_frames(path)
             cap = sum(capacity_332(f) for f in frames) // 8
-            self.root.after(0, self._load_video_done, frames, fps, cap)
+            fmt = _fmt_of(path)
+            self.root.after(0, self._load_video_done, frames, fps, cap, fmt)
         except Exception as exc:
             self.root.after(0, self._load_video_error, str(exc))
 
-    def _load_video_done(self, frames, fps, cap):
+    def _load_video_done(self, frames, fps, cap, fmt):
         self.video_frames = frames; self.fps = fps; self._capacity_bytes = cap
+        self.video_format = fmt
         self.video_selected = True
         self.embed_select_btn.config(text="✖  Clear Video", state="normal")
-        self.embed_status.config(text=f"✅  Loaded {len(frames)} frames", fg=SUCCESS)
+        self.embed_status.config(
+            text=f"✅  Loaded {len(frames)} frames  [{fmt.upper()}]", fg=SUCCESS)
         self._update_capacity_ui(0)
         self._play_video()
 
@@ -385,10 +401,19 @@ class StegoApp:
                 except ValueError:
                     messagebox.showerror("Error", f"Invalid stego key: '{raw}'"); return
 
+        # Output path — locked to same format as the input video
+        fmt = self.video_format or 'avi'
+        if fmt == 'mp4':
+            out_ext   = ".mp4"
+            out_types = [("MP4 video", "*.mp4")]
+        else:
+            out_ext   = ".avi"
+            out_types = [("AVI video", "*.avi")]
+
         output_path = filedialog.asksaveasfilename(
-            title="Save stego video as",
-            defaultextension=".avi",
-            filetypes=[("AVI video", "*.avi")])
+            title=f"Save stego video as ({fmt.upper()})",
+            defaultextension=out_ext,
+            filetypes=out_types)
         if not output_path:
             return
 
@@ -407,7 +432,9 @@ class StegoApp:
     def _embed_worker(self, msg, is_text, extension, filename,
                       use_encrypt, a51_key, use_random, stego_key, output_path):
         try:
-            result = embed_message(
+            # Route to the correct backend based on output file format
+            embed_fn = _embed_mp4 if _fmt_of(output_path) == 'mp4' else _embed_avi
+            result = embed_fn(
                 cover_path=self.video_path, output_path=output_path,
                 message=msg, is_text=is_text, extension=extension, filename=filename,
                 use_encryption=use_encrypt, a51_key=a51_key,
@@ -583,7 +610,9 @@ class StegoApp:
 
     def _extract_worker(self, stego_path, a51_key, stego_key):
         try:
-            result = extract_message(stego_path, a51_key, stego_key)
+            # Route to the correct backend based on stego file format
+            extract_fn = _extract_mp4 if _fmt_of(stego_path) == 'mp4' else _extract_avi
+            result = extract_fn(stego_path, a51_key, stego_key)
             self.root.after(0, self._extract_done, result, stego_path)
         except Exception as exc:
             self.root.after(0, self._extract_error, str(exc))
@@ -651,7 +680,6 @@ class StegoApp:
         self.extract_btn.config(state="normal", text="🔓  Extract Message")
         self.extract_status.config(text=f"❌  {msg}", fg=DANGER)
         self._set_output_text(f"❌  EXTRACTION FAILED\n\n{msg}", DANGER)
-
 
 
 
