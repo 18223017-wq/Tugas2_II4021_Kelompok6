@@ -12,6 +12,16 @@ from src.stego_lsb_332 import (
     embed_bits_sequential_332, extract_bits_sequential_332,
     embed_bits_random_332, extract_bits_random_332,
 )
+from src.stego_lsb_111 import (
+    capacity_111,
+    embed_bits_sequential_111, extract_bits_sequential_111,
+    embed_bits_random_111, extract_bits_random_111,
+)
+from src.stego_lsb_444 import (
+    capacity_444,
+    embed_bits_sequential_444, extract_bits_sequential_444,
+    embed_bits_random_444, extract_bits_random_444,
+)
 from src.video_io import read_video_frames
 
 SAMPLE_VIDEO = "samples/sample_video.avi"
@@ -56,32 +66,25 @@ def test_bits_to_bytes_padding():
     assert isinstance(result, bytes)
     assert len(result) == 1  # 3 bit → padding jadi 8 bit → 1 byte
 
-# ─── CAPACITY ─────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+#  3-3-2 METHOD
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def test_capacity_332(real_frame):
     h, w, _ = real_frame.shape
     cap = capacity_332(real_frame)
     assert cap == h * w * 8
-    print(f"\nKapasitas frame {w}x{h}: {cap} bit = {cap // 8} bytes = {cap // 8 // 1024} KB")
+    print(f"\nKapasitas 3-3-2 frame {w}x{h}: {cap} bit = {cap // 8} bytes = {cap // 8 // 1024} KB")
 
-# ─── SEQUENTIAL EMBED/EXTRACT ─────────────────────────────────────────────────
-
-def test_sequential_roundtrip_short_message(real_frame, sample_message):
+def test_332_sequential_roundtrip(real_frame, sample_message):
     """Embed → extract pesan pendek, harus identical."""
     bits = bytes_to_bits(sample_message)
-
     stego = embed_bits_sequential_332(real_frame, bits)
     extracted_bits = extract_bits_sequential_332(stego, len(bits))
     recovered = bits_to_bytes(extracted_bits)[:len(sample_message)]
-
-    md5_orig = hashlib.md5(sample_message).hexdigest()
-    md5_recv = hashlib.md5(recovered).hexdigest()
-    print(f"\nMD5 original:  {md5_orig}")
-    print(f"MD5 recovered: {md5_recv}")
-
     assert recovered == sample_message
 
-def test_sequential_roundtrip_file(real_frame, sample_message_file):
+def test_332_sequential_roundtrip_file(real_frame, sample_message_file):
     """Embed → extract isi pesan.txt, harus identical."""
     bits = bytes_to_bits(sample_message_file)
     cap = capacity_332(real_frame)
@@ -90,64 +93,158 @@ def test_sequential_roundtrip_file(real_frame, sample_message_file):
     stego = embed_bits_sequential_332(real_frame, bits)
     extracted_bits = extract_bits_sequential_332(stego, len(bits))
     recovered = bits_to_bytes(extracted_bits)[:len(sample_message_file)]
-
     assert recovered == sample_message_file
     print(f"\npesan.txt roundtrip OK ({len(sample_message_file)} bytes)")
 
-def test_sequential_stego_frame_diff(real_frame, sample_message):
-    """Frame asli dan stego harus beda (embed terjadi), tapi sangat mirip."""
+def test_332_stego_frame_diff(real_frame, sample_message):
+    """Frame asli dan stego harus beda tapi sangat mirip."""
     bits = bytes_to_bits(sample_message)
     stego = embed_bits_sequential_332(real_frame, bits)
 
-    assert not np.array_equal(real_frame, stego), "Stego frame identik dengan cover (embed tidak terjadi?)"
-
+    assert not np.array_equal(real_frame, stego), "Stego frame identik dengan cover"
     diff = np.abs(real_frame.astype(int) - stego.astype(int))
     max_diff = diff.max()
+    # 3-3-2: max diff = 7 (R/G, 3 bit) atau 3 (B, 2 bit)
+    assert max_diff <= 7, f"Max diff > 7 (tidak wajar untuk 3-3-2): {max_diff}"
+    print(f"\n3-3-2 Max pixel diff: {max_diff} (max=7)")
 
-    # Skema 3-3-2: max diff per channel = 7 (R/G, 3 bit) atau 3 (B, 2 bit)
-    assert max_diff <= 7, f"Perbedaan piksel > 7 (tidak wajar untuk 3-3-2): max_diff={max_diff}"
-    print(f"\nMax pixel diff: {max_diff} (wajar untuk skema 3-3-2, max=7)")
-
-def test_sequential_capacity_exceeded(real_frame):
-    """Embed melebihi kapasitas harus raise ValueError."""
+def test_332_capacity_exceeded(real_frame):
     cap = capacity_332(real_frame)
     oversized_bits = np.ones(cap + 1, dtype=np.uint8)
     with pytest.raises(ValueError, match="Payload terlalu besar"):
         embed_bits_sequential_332(real_frame, oversized_bits)
 
-# ─── RANDOM EMBED/EXTRACT ─────────────────────────────────────────────────────
-
-def test_random_roundtrip(real_frame, sample_message):
-    """Embed → extract acak dengan seed yang sama harus identical."""
+def test_332_random_roundtrip(real_frame, sample_message):
     seed = 42
     bits = bytes_to_bits(sample_message)
-
     stego = embed_bits_random_332(real_frame, bits, seed=seed)
     extracted_bits = extract_bits_random_332(stego, len(bits), seed=seed)
     recovered = bits_to_bytes(extracted_bits)[:len(sample_message)]
-
     assert recovered == sample_message
-    print(f"\nRandom roundtrip OK (seed={seed})")
+    print(f"\n3-3-2 Random roundtrip OK (seed={seed})")
 
-def test_random_wrong_seed_fails(real_frame, sample_message):
-    """Extract dengan seed salah tidak boleh recover pesan yang sama."""
+def test_332_random_wrong_seed_fails(real_frame, sample_message):
     bits = bytes_to_bits(sample_message)
     stego = embed_bits_random_332(real_frame, bits, seed=42)
-
     extracted_bits = extract_bits_random_332(stego, len(bits), seed=999)
     recovered = bits_to_bytes(extracted_bits)[:len(sample_message)]
-
     assert recovered != sample_message
-    print(f"\nWrong seed correctly fails to recover message")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  1-1-1 METHOD
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_capacity_111(real_frame):
+    h, w, _ = real_frame.shape
+    cap = capacity_111(real_frame)
+    assert cap == h * w * 3
+    print(f"\nKapasitas 1-1-1 frame {w}x{h}: {cap} bit = {cap // 8} bytes = {cap // 8 // 1024} KB")
+
+def test_111_sequential_roundtrip(real_frame, sample_message):
+    bits = bytes_to_bits(sample_message)
+    stego = embed_bits_sequential_111(real_frame, bits)
+    extracted_bits = extract_bits_sequential_111(stego, len(bits))
+    recovered = bits_to_bytes(extracted_bits)[:len(sample_message)]
+    assert recovered == sample_message
+
+def test_111_stego_frame_diff(real_frame, sample_message):
+    """1-1-1: max diff per channel = 1."""
+    bits = bytes_to_bits(sample_message)
+    stego = embed_bits_sequential_111(real_frame, bits)
+
+    assert not np.array_equal(real_frame, stego), "Stego frame identik dengan cover"
+    diff = np.abs(real_frame.astype(int) - stego.astype(int))
+    max_diff = diff.max()
+    assert max_diff <= 1, f"Max diff > 1 (tidak wajar untuk 1-1-1): {max_diff}"
+    print(f"\n1-1-1 Max pixel diff: {max_diff} (max=1)")
+
+def test_111_capacity_exceeded(real_frame):
+    cap = capacity_111(real_frame)
+    oversized_bits = np.ones(cap + 1, dtype=np.uint8)
+    with pytest.raises(ValueError, match="Payload terlalu besar"):
+        embed_bits_sequential_111(real_frame, oversized_bits)
+
+def test_111_random_roundtrip(real_frame, sample_message):
+    seed = 42
+    bits = bytes_to_bits(sample_message)
+    stego = embed_bits_random_111(real_frame, bits, seed=seed)
+    extracted_bits = extract_bits_random_111(stego, len(bits), seed=seed)
+    recovered = bits_to_bytes(extracted_bits)[:len(sample_message)]
+    assert recovered == sample_message
+    print(f"\n1-1-1 Random roundtrip OK (seed={seed})")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  4-4-4 METHOD
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_capacity_444(real_frame):
+    h, w, _ = real_frame.shape
+    cap = capacity_444(real_frame)
+    assert cap == h * w * 12
+    print(f"\nKapasitas 4-4-4 frame {w}x{h}: {cap} bit = {cap // 8} bytes = {cap // 8 // 1024} KB")
+
+def test_444_sequential_roundtrip(real_frame, sample_message):
+    bits = bytes_to_bits(sample_message)
+    stego = embed_bits_sequential_444(real_frame, bits)
+    extracted_bits = extract_bits_sequential_444(stego, len(bits))
+    recovered = bits_to_bytes(extracted_bits)[:len(sample_message)]
+    assert recovered == sample_message
+
+def test_444_stego_frame_diff(real_frame, sample_message):
+    """4-4-4: max diff per channel = 15."""
+    bits = bytes_to_bits(sample_message)
+    stego = embed_bits_sequential_444(real_frame, bits)
+
+    assert not np.array_equal(real_frame, stego), "Stego frame identik dengan cover"
+    diff = np.abs(real_frame.astype(int) - stego.astype(int))
+    max_diff = diff.max()
+    assert max_diff <= 15, f"Max diff > 15 (tidak wajar untuk 4-4-4): {max_diff}"
+    print(f"\n4-4-4 Max pixel diff: {max_diff} (max=15)")
+
+def test_444_capacity_exceeded(real_frame):
+    cap = capacity_444(real_frame)
+    oversized_bits = np.ones(cap + 1, dtype=np.uint8)
+    with pytest.raises(ValueError, match="Payload terlalu besar"):
+        embed_bits_sequential_444(real_frame, oversized_bits)
+
+def test_444_random_roundtrip(real_frame, sample_message):
+    seed = 42
+    bits = bytes_to_bits(sample_message)
+    stego = embed_bits_random_444(real_frame, bits, seed=seed)
+    extracted_bits = extract_bits_random_444(stego, len(bits), seed=seed)
+    recovered = bits_to_bytes(extracted_bits)[:len(sample_message)]
+    assert recovered == sample_message
+    print(f"\n4-4-4 Random roundtrip OK (seed={seed})")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  CROSS-METHOD COMPARISONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_capacity_ordering(real_frame):
+    """1-1-1 < 3-3-2 < 4-4-4 capacity."""
+    c111 = capacity_111(real_frame)
+    c332 = capacity_332(real_frame)
+    c444 = capacity_444(real_frame)
+    assert c111 < c332 < c444
+    print(f"\nCapacity: 1-1-1={c111} < 3-3-2={c332} < 4-4-4={c444}")
+
+def test_methods_produce_different_stego(real_frame, sample_message):
+    """Same data embedded with different methods → different stego frames."""
+    bits = bytes_to_bits(sample_message)
+    s111 = embed_bits_sequential_111(real_frame, bits)
+    s332 = embed_bits_sequential_332(real_frame, bits)
+    s444 = embed_bits_sequential_444(real_frame, bits)
+    assert not np.array_equal(s111, s332)
+    assert not np.array_equal(s332, s444)
+    assert not np.array_equal(s111, s444)
+    print("\nAll 3 methods produce different stego frames ✓")
 
 def test_random_vs_sequential_differ(real_frame, sample_message):
-    """Stego hasil random dan sequential harus berbeda (urutan piksel beda)."""
+    """Stego hasil random dan sequential harus berbeda."""
     bits = bytes_to_bits(sample_message)
     stego_seq = embed_bits_sequential_332(real_frame, bits)
     stego_rnd = embed_bits_random_332(real_frame, bits, seed=42)
-
     assert not np.array_equal(stego_seq, stego_rnd)
-    print(f"\nSequential dan random menghasilkan stego berbeda")
 
 def test_pixel_indices_random_reproducible():
     """Seed yang sama harus selalu hasilkan urutan yang sama."""
@@ -157,34 +254,33 @@ def test_pixel_indices_random_reproducible():
 
     idx3 = pixel_indices_random(480, 640, seed=99)
     assert not np.array_equal(idx1, idx3)
-    print(f"\nSeed reproducible OK")
 
 # ─── OUTPUT SAVE ──────────────────────────────────────────────────────────────
 
 def test_save_stego_output(real_frame, sample_message):
-    """Simpan frame stego ke tests/output/ untuk inspeksi visual."""
+    """Simpan frame stego ke tests_output/ untuk inspeksi visual."""
     import cv2
     os.makedirs("tests_output", exist_ok=True)
 
     bits = bytes_to_bits(sample_message)
 
-    stego_seq = embed_bits_sequential_332(real_frame, bits)
-    stego_rnd = embed_bits_random_332(real_frame, bits, seed=42)
+    stego_111 = embed_bits_sequential_111(real_frame, bits)
+    stego_332 = embed_bits_sequential_332(real_frame, bits)
+    stego_444 = embed_bits_sequential_444(real_frame, bits)
 
     cv2.imwrite("tests_output/cover_frame.png", real_frame)
-    cv2.imwrite("tests_output/stego_sequential_frame.png", stego_seq)
-    cv2.imwrite("tests_output/stego_random_frame.png", stego_rnd)
+    cv2.imwrite("tests_output/stego_111_frame.png", stego_111)
+    cv2.imwrite("tests_output/stego_332_frame.png", stego_332)
+    cv2.imwrite("tests_output/stego_444_frame.png", stego_444)
 
-    diff_seq = cv2.absdiff(real_frame, stego_seq)
-    cv2.imwrite("tests_output/diff_sequential.png", diff_seq * 50)  # amplify diff
+    diff_332 = cv2.absdiff(real_frame, stego_332)
+    cv2.imwrite("tests_output/diff_332.png", diff_332 * 50)
+
+    diff_444 = cv2.absdiff(real_frame, stego_444)
+    cv2.imwrite("tests_output/diff_444.png", diff_444 * 20)
 
     print(f"\n  Saved to tests_output/")
-    print(f"   cover_frame.png")
-    print(f"   stego_sequential_frame.png")
-    print(f"   stego_random_frame.png")
-    print(f"   diff_sequential.png (amplified x50)")
-
-    assert os.path.exists("tests_output/stego_sequential_frame.png")
+    assert os.path.exists("tests_output/stego_332_frame.png")
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s"])
