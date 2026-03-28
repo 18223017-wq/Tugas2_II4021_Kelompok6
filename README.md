@@ -1,4 +1,4 @@
-# 🎬 Video Steganography with A5/1 Encryption
+# Video Steganography with A5/1 Encryption
 
 > **Tugas 2 — II4021 Kriptografi dan Koding**  
 > Kelompok 6
@@ -7,7 +7,7 @@ Aplikasi steganografi video yang menyembunyikan pesan (teks maupun file) ke dala
 
 ---
 
-## ✨ Fitur Utama
+## Fitur Utama
 
 | Fitur                        | Deskripsi                                                                      |
 |------------------------------|--------------------------------------------------------------------------------|
@@ -21,7 +21,7 @@ Aplikasi steganografi video yang menyembunyikan pesan (teks maupun file) ke dala
 
 ---
 
-## 📁 Struktur Proyek
+## Struktur Proyek
 
 ```
 Tugas2_II4021_Kelompok6/
@@ -49,7 +49,7 @@ Tugas2_II4021_Kelompok6/
 
 ---
 
-## 🚀 Instalasi & Menjalankan
+## Instalasi & Menjalankan
 
 ### Prasyarat
 
@@ -89,54 +89,32 @@ pytest tests/ -v
 
 ---
 
-## 🔧 Cara Penggunaan
+## Cara Penggunaan
 
 ### Embed Pesan
 
-1. Buka tab **📥 Embed**
+1. Buka tab **Embed**
 2. Klik **Select Cover Video** — pilih file `.avi` atau `.mp4`
 3. Pilih **LSB Method** dari dropdown: `1-1-1`, `3-3-2`, atau `4-4-4`
 4. Masukkan pesan teks di text box, **atau** klik **Select File to Embed** untuk menyisipkan file biner
 5. (Opsional) Aktifkan **A5/1 Encryption** dan masukkan kunci 64-bit, contoh: `0x123456789ABCDEF0`
 6. (Opsional) Aktifkan **Random Pixel Order** dan masukkan stego key (integer)
-7. Klik **🔒 Embed Message** → pilih lokasi output
+7. Klik **Embed Message** → pilih lokasi output
 8. File kunci otomatis disimpan sebagai `*_keys.txt` di samping output video
 
 ### Extract Pesan
 
-1. Buka tab **📤 Extract**
+1. Buka tab **Extract**
 2. Klik **Select Stego Video** — pilih video yang sudah di-embed
 3. Masukkan **A5/1 Key** jika pesan dienkripsi
 4. Masukkan **Stego Key** jika mode random digunakan
-5. Klik **🔓 Extract Message**
+5. Klik **Extract Message**
 6. Pesan teks ditampilkan langsung; file biner akan diminta lokasi Save As
 7. Metode LSB yang digunakan akan terdeteksi secara otomatis dari header
 
 ---
 
-## 🏗️ Arsitektur
-
-### Pipeline
-
-```
-                    ┌─────────────┐
-    Pesan/File ───▶ │  A5/1       │ ───▶ Ciphertext (opsional)
-                    │  Encrypt    │
-                    └─────────────┘
-                          │
-                          ▼
-                    ┌─────────────┐
-                    │  LSB Embed  │ ───▶ Embed ke frame video
-                    │ 1-1-1/3-3-2│      (metode dipilih user)
-                    │  /4-4-4    │
-                    └─────────────┘
-                          │
-                          ▼
-                    ┌─────────────┐
-                    │  Selective  │ ───▶ Output video (AVI/MP4)
-                    │  Encoding   │
-                    └─────────────┘
-```
+## Arsitektur
 
 ### Metode LSB
 
@@ -172,7 +150,7 @@ Implementasi sesuai spesifikasi GSM:
 
 ---
 
-## 📊 Metrik Kualitas
+## Metrik Kualitas
 
 Setelah embedding, aplikasi menghitung:
 
@@ -182,7 +160,7 @@ Setelah embedding, aplikasi menghitung:
 
 ---
 
-## 📦 Dependensi
+## Dependensi
 
 | Package                 | Fungsi                                   |
 |-------------------------|------------------------------------------|
@@ -194,7 +172,7 @@ Setelah embedding, aplikasi menghitung:
 
 ---
 
-## 🧪 Testing
+## Testing
 
 ```bash
 # Jalankan semua test
@@ -210,16 +188,16 @@ pytest tests/test_video_io.py -v
 
 ---
 
-## 👥 Kelompok 6
+## Kelompok 6
 
-| NIM      | Nama                      |
-|----------|---------------------------|
-| 18223017 | Carlen Asadel Axelle      |
-| —        | —                         |
-| —        | —                         |
+| NIM      | Nama                                     |
+|----------|------------------------------------------|
+| 18223011 | Samuel Chris Michael Bagasta Simanjuntak |
+| 18223017 | Carlen Asadel Axelle                     |
+| 18223092 | Gabriela Jennifer Sandy                  |
 
 ---
 
-## 📄 Lisensi
+## Lisensi
 
 Proyek ini dibuat untuk keperluan tugas kuliah **II4021 Kriptografi dan Koding** — Institut Teknologi Bandung.
