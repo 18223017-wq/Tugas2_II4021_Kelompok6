@@ -209,4 +209,4 @@ pytest tests/test_video_io.py -v
 
 ## Lisensi
 
-Proyek ini dibuat untuk keperluan tugas kuliah **II4021 Kriptografi dan Koding** — Institut Teknologi Bandung.
+Proyek ini dibuat untuk keperluan tugas kuliah **II4021 Kriptografi** — Institut Teknologi Bandung.
