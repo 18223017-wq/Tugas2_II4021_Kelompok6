@@ -100,7 +100,6 @@ def _mux_audio(video_path: str, audio_source: str, output_path: str):
         *audio_args,
         "-map", "0:v:0",
         "-map", "1:a?",
-        "-shortest",
         output_path
     ]
     result = subprocess.run(cmd, capture_output=True)

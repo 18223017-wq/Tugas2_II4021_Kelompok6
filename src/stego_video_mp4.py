@@ -113,137 +113,121 @@ def _calculate_embedded_frame_count(total_bits: int, frame_capacity_bits: int) -
     return (total_bits + frame_capacity_bits - 1) // frame_capacity_bits
 
 
-# ─── LOW-LEVEL BIT EMBEDDING WITH PIXEL OFFSET ────────────────────────────────
+# ─── PER-FRAME BIT EMBEDDING WITH PIXEL OFFSET ───────────────────────────────
+# Data fills frames sequentially (frame 0 first, then 1, etc.).
+# For random mode, pixels are shuffled WITHIN each frame — this keeps data
+# confined to the first N frames so selective (lossless+lossy) encoding works.
 
-def _embed_bits_with_pixel_offset(frames: list, bits: np.ndarray,
-                                   pixel_offset: int,
-                                   is_random: bool, seed: int,
-                                   lsb_method: int = LSB_METHOD_332) -> list:
+def _get_channel_bits(lsb_method):
+    """Return (r_bits, g_bits, b_bits) for the given LSB method."""
+    if lsb_method == LSB_METHOD_111:
+        return 1, 1, 1
+    elif lsb_method == LSB_METHOD_444:
+        return 4, 4, 4
+    else:  # 332
+        return 3, 3, 2
+
+
+def _embed_payload_per_frame(frames: list, bits: np.ndarray,
+                              pixel_offset: int,
+                              is_random: bool, seed: int,
+                              lsb_method: int = LSB_METHOD_332) -> list:
     """
-    Embed bits ke frames mulai dari pixel_offset (dalam satuan piksel),
-    melewati piksel-piksel yang sudah dipakai header.
+    Embed payload bits frame-by-frame.
+    - Frame 0: starts from pixel_offset (header occupies pixels 0..pixel_offset-1)
+    - Frame 1+: uses full frame
+    - Random mode: pixels are shuffled within each frame independently
     """
     result_frames = [f.copy() for f in frames]
     bpp = get_bits_per_pixel(lsb_method)
+    r_bits, g_bits, b_bits = _get_channel_bits(lsb_method)
 
     h, w, _ = frames[0].shape
     pixels_per_frame = h * w
-    total_pixels = len(frames) * pixels_per_frame
-    available_pixel_indices = np.arange(pixel_offset, total_pixels)
-
-    if is_random:
-        rng = np.random.default_rng(seed)
-        rng.shuffle(available_pixel_indices)
-
-    pixels_needed = int(np.ceil(bits.size / bpp))
-    if pixels_needed > len(available_pixel_indices):
-        raise ValueError("Payload terlalu besar untuk kapasitas yang tersisa")
 
     bit_idx = 0
-    
-    # Determine bit masks based on method
-    if lsb_method == LSB_METHOD_111:
-        r_bits, g_bits, b_bits = 1, 1, 1
-    elif lsb_method == LSB_METHOD_444:
-        r_bits, g_bits, b_bits = 4, 4, 4
-    else:  # 332
-        r_bits, g_bits, b_bits = 3, 3, 2
+    total_bits = bits.size
 
-    for pix_num in available_pixel_indices[:pixels_needed]:
-        frame_idx = pix_num // pixels_per_frame
-        local_pix = pix_num % pixels_per_frame
-        i, j = divmod(local_pix, w)
-
-        frame = result_frames[frame_idx]
-        r, g, b = int(frame[i, j, 0]), int(frame[i, j, 1]), int(frame[i, j, 2])
-
-        # Embed into R channel
-        for k in range(r_bits):
-            if bit_idx < bits.size:
-                r = (r & ~(1 << k)) | (int(bits[bit_idx]) << k)
-                bit_idx += 1
-        # Embed into G channel
-        for k in range(g_bits):
-            if bit_idx < bits.size:
-                g = (g & ~(1 << k)) | (int(bits[bit_idx]) << k)
-                bit_idx += 1
-        # Embed into B channel
-        for k in range(b_bits):
-            if bit_idx < bits.size:
-                b = (b & ~(1 << k)) | (int(bits[bit_idx]) << k)
-                bit_idx += 1
-
-        result_frames[frame_idx][i, j] = [r & 0xFF, g & 0xFF, b & 0xFF]
-
-        if bit_idx >= bits.size:
+    for fi in range(len(result_frames)):
+        if bit_idx >= total_bits:
             break
+
+        # Frame 0 skips header pixels; all others start at 0
+        start_pix = pixel_offset if fi == 0 else 0
+        pix_indices = np.arange(start_pix, pixels_per_frame)
+
+        if is_random and pix_indices.size > 0:
+            rng = np.random.default_rng(seed)
+            rng.shuffle(pix_indices)
+
+        for pix_num in pix_indices:
+            if bit_idx >= total_bits:
+                break
+            i, j = divmod(int(pix_num), w)
+
+            r = int(result_frames[fi][i, j, 0])
+            g = int(result_frames[fi][i, j, 1])
+            b = int(result_frames[fi][i, j, 2])
+
+            for k in range(r_bits):
+                if bit_idx < total_bits:
+                    r = (r & ~(1 << k)) | (int(bits[bit_idx]) << k)
+                    bit_idx += 1
+            for k in range(g_bits):
+                if bit_idx < total_bits:
+                    g = (g & ~(1 << k)) | (int(bits[bit_idx]) << k)
+                    bit_idx += 1
+            for k in range(b_bits):
+                if bit_idx < total_bits:
+                    b = (b & ~(1 << k)) | (int(bits[bit_idx]) << k)
+                    bit_idx += 1
+
+            result_frames[fi][i, j] = [r & 0xFF, g & 0xFF, b & 0xFF]
 
     return result_frames
 
 
-def _extract_bits_with_pixel_offset(frames: list, num_bits: int,
-                                     pixel_offset: int,
-                                     is_random: bool, seed: int,
-                                     original_num_frames: int = 0,
-                                     lsb_method: int = LSB_METHOD_332) -> np.ndarray:
+def _extract_payload_per_frame(frames: list, num_bits: int,
+                                pixel_offset: int,
+                                is_random: bool, seed: int,
+                                lsb_method: int = LSB_METHOD_332) -> np.ndarray:
     """
-    Ekstrak bits dari frames.
+    Extract payload bits frame-by-frame (mirrors _embed_payload_per_frame).
     """
     bpp = get_bits_per_pixel(lsb_method)
+    r_bits, g_bits, b_bits = _get_channel_bits(lsb_method)
+
     h, w, _ = frames[0].shape
     pixels_per_frame = h * w
-    current_num_frames = len(frames)
-
-    if original_num_frames > current_num_frames * 2:
-        print(f"⚠️ Warning: Header num_frames ({original_num_frames}) > 2x actual ({current_num_frames}). Ignoring header value.")
-        calc_num_frames = current_num_frames
-    else:
-        calc_num_frames = original_num_frames if original_num_frames > 0 else current_num_frames
-    
-    total_pixels_calc = calc_num_frames * pixels_per_frame
-    
-    if total_pixels_calc > 500_000_000:
-        print(f"⚠️ Warning: Total pixels {total_pixels_calc} too large for safe shuffle. Clamping to actual.")
-        calc_num_frames = current_num_frames
-        total_pixels_calc = calc_num_frames * pixels_per_frame
-
-    available_pixel_indices = np.arange(pixel_offset, total_pixels_calc)
-
-    if is_random:
-        rng = np.random.default_rng(seed)
-        rng.shuffle(available_pixel_indices)
-
-    # Determine bit extraction pattern based on method
-    if lsb_method == LSB_METHOD_111:
-        r_bits, g_bits, b_bits = 1, 1, 1
-    elif lsb_method == LSB_METHOD_444:
-        r_bits, g_bits, b_bits = 4, 4, 4
-    else:  # 332
-        r_bits, g_bits, b_bits = 3, 3, 2
 
     bits = []
-    for pix_num in available_pixel_indices:
+
+    for fi in range(len(frames)):
         if len(bits) >= num_bits:
             break
-        
-        frame_idx = pix_num // pixels_per_frame
-        
-        if frame_idx >= current_num_frames:
-            bits.extend([0] * bpp)
-            continue
-            
-        local_pix = pix_num % pixels_per_frame
-        i, j = divmod(local_pix, w)
 
-        frame = frames[frame_idx]
-        r, g, b = int(frame[i, j, 0]), int(frame[i, j, 1]), int(frame[i, j, 2])
+        start_pix = pixel_offset if fi == 0 else 0
+        pix_indices = np.arange(start_pix, pixels_per_frame)
 
-        for k in range(r_bits):
-            bits.append((r >> k) & 1)
-        for k in range(g_bits):
-            bits.append((g >> k) & 1)
-        for k in range(b_bits):
-            bits.append((b >> k) & 1)
+        if is_random and pix_indices.size > 0:
+            rng = np.random.default_rng(seed)
+            rng.shuffle(pix_indices)
+
+        for pix_num in pix_indices:
+            if len(bits) >= num_bits:
+                break
+            i, j = divmod(int(pix_num), w)
+
+            r = int(frames[fi][i, j, 0])
+            g = int(frames[fi][i, j, 1])
+            b = int(frames[fi][i, j, 2])
+
+            for k in range(r_bits):
+                bits.append((r >> k) & 1)
+            for k in range(g_bits):
+                bits.append((g >> k) & 1)
+            for k in range(b_bits):
+                bits.append((b >> k) & 1)
 
     return np.array(bits[:num_bits], dtype=np.uint8)
 
@@ -342,16 +326,25 @@ def embed_message(cover_path: str, output_path: str, message: bytes, is_text: bo
 
     stego_frames, pixel_offset = _embed_header_sequential(frames, header)
     payload_bits = bytes_to_bits(payload)
-    stego_frames = _embed_bits_with_pixel_offset(
+    stego_frames = _embed_payload_per_frame(
         stego_frames, payload_bits, pixel_offset=pixel_offset,
         is_random=use_random, seed=seed, lsb_method=lsb_method
     )
 
-    # Calculate how many frames contain embedded data for selective encoding
-    total_bits_embedded = HEADER_BITS + payload_bits.size
-    cap_fn = get_capacity_fn(lsb_method)
-    frame_capacity_bits = cap_fn(frames[0])
-    embedded_frame_count = _calculate_embedded_frame_count(total_bits_embedded, frame_capacity_bits)
+    # Calculate how many frames contain embedded data for selective encoding.
+    # Per-frame shuffling keeps data in the first N frames (both seq & random),
+    # so selective lossless+lossy encoding always works.
+    bpp = get_bits_per_pixel(lsb_method)
+    h, w, _ = frames[0].shape
+    pixels_per_frame = h * w
+    frame0_payload_cap = (pixels_per_frame - pixel_offset) * bpp
+    remaining_payload = payload_bits.size - frame0_payload_cap
+    if remaining_payload <= 0:
+        embedded_frame_count = 1
+    else:
+        full_frame_cap = pixels_per_frame * bpp
+        extra_frames = (remaining_payload + full_frame_cap - 1) // full_frame_cap
+        embedded_frame_count = 1 + extra_frames
 
     write_video_frames(output_path, stego_frames, fps, mp4_crf=mp4_crf,
                       embedded_frame_count=embedded_frame_count,
@@ -405,9 +398,9 @@ def extract_message(stego_path: str, a51_key: Optional[int] = None,
     if num_frames > 0 and len(frames) > num_frames:
         frames = frames[:num_frames]
 
-    payload_bits = _extract_bits_with_pixel_offset(
+    payload_bits = _extract_payload_per_frame(
         frames, num_bits=payload_size * 8, pixel_offset=pixel_offset,
-        is_random=is_random, seed=seed, original_num_frames=num_frames,
+        is_random=is_random, seed=seed,
         lsb_method=lsb_method
     )
     payload = bits_to_bytes(payload_bits)[:payload_size]

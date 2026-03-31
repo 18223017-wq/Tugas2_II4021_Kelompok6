@@ -94,7 +94,6 @@ def _mux_audio(video_path: str, audio_source: str, output_path: str):
         "-c:a", "copy",         # don't re-encode audio
         "-map", "0:v:0",        # take video from first input
         "-map", "1:a?",         # take audio from second input (optional)
-        "-shortest",
         output_path
     ]
     result = subprocess.run(cmd, capture_output=True)
